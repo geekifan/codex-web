@@ -10,6 +10,10 @@ import Fastify from "fastify";
 import fastifyMultipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import { installModuleAliasHook } from "./module";
+import {
+  parseReliableBridgeHello,
+  ReliableBridgeSession,
+} from "./reliable-bridge";
 import { glob } from "glob";
 
 type ServerOptions = {
@@ -250,11 +254,27 @@ function ensureElectronLikeProcessContext(): void {
   processWithElectronFields.type ??= "browser";
 }
 
+function sendBridgeReset(socket: WebSocket, reason: string): void {
+  if (socket.readyState === WebSocket.OPEN) {
+    try {
+      socket.send(JSON.stringify({ type: "bridge-reset", reason }));
+    } catch {
+      socket.terminate();
+      return;
+    }
+  }
+  socket.close(1008, reason);
+}
+
 async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
   const bridgeState = getIpcMainBridgeState();
   const app = Fastify({ logger: false });
   const websocketServer = new WebSocketServer({ noServer: true });
-  const sockets = new Set<WebSocket>();
+  const serverEpoch = randomUUID();
+  const sessions = new Map<
+    string,
+    ReliableBridgeSession<RendererToMainMessage, MainToRendererMessage>
+  >();
 
   await app.register(fastifyMultipart, {
     limits: {
@@ -333,98 +353,125 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
   });
 
   bridgeState.broadcastToRenderer = (message: MainToRendererMessage): void => {
-    const payload = JSON.stringify(message);
-    for (const socket of sockets) {
-      if (socket.readyState === WebSocket.OPEN) {
-        socket.send(payload);
-      }
+    for (const session of sessions.values()) {
+      session.send(message);
     }
   };
 
   websocketServer.on("connection", (socket) => {
-    sockets.add(socket);
-
-    socket.on("close", () => {
-      sockets.delete(socket);
+    const handshakeTimeout = setTimeout(() => {
+      socket.close(1008, "reliable bridge handshake timed out");
+    }, 10_000);
+    handshakeTimeout.unref?.();
+    socket.once("close", () => {
+      clearTimeout(handshakeTimeout);
     });
 
-    socket.on("message", (rawData) => {
-      let message: RendererToMainMessage;
+    socket.once("message", (rawData) => {
+      clearTimeout(handshakeTimeout);
+      let value: unknown;
       try {
-        message = JSON.parse(String(rawData)) as RendererToMainMessage;
-      } catch (error) {
-        console.error("[ipc-bridge] invalid JSON payload", error);
+        value = JSON.parse(String(rawData));
+      } catch {
+        sendBridgeReset(socket, "invalid reliable bridge handshake");
         return;
       }
 
-      if (message.type === "ipc-renderer-send") {
-        bridgeState.handleRendererSend?.(message.channel, message.args);
+      const hello = parseReliableBridgeHello(value);
+      if (!hello) {
+        sendBridgeReset(socket, "invalid reliable bridge handshake");
         return;
       }
 
-      if (message.type === "workspace-directory-entries-request") {
-        const { requestId } = message;
-        getWorkspaceDirectoryEntries(message)
-          .then((result) => {
-            const payload: MainToRendererMessage = {
-              type: "workspace-directory-entries-result",
-              requestId,
-              ok: true,
-              result,
-            };
-            if (socket.readyState === WebSocket.OPEN) {
-              socket.send(JSON.stringify(payload));
-            }
-          })
-          .catch((error) => {
-            const payload: MainToRendererMessage = {
-              type: "workspace-directory-entries-result",
-              requestId,
-              ok: false,
-              errorMessage: errorMessage(error),
-            };
-            if (socket.readyState === WebSocket.OPEN) {
-              socket.send(JSON.stringify(payload));
-            }
-          });
+      if (hello.serverEpoch !== null && hello.serverEpoch !== serverEpoch) {
+        sendBridgeReset(socket, "backend restarted");
         return;
       }
 
-      if (message.type === "ipc-renderer-invoke") {
-        const { channel, requestId, args } = message;
-        Promise.resolve(
-          bridgeState.handleRendererInvoke?.(channel, args) ??
-            Promise.reject(
-              new Error(
-                `[ipc-bridge] no ipcMain.handle for channel ${channel}`,
-              ),
-            ),
-        )
-          .then((result) => {
-            const payload: MainToRendererMessage = {
-              type: "ipc-renderer-invoke-result",
-              requestId,
-              ok: true,
-              result,
-            };
-            if (socket.readyState === WebSocket.OPEN) {
-              socket.send(JSON.stringify(payload));
-            }
-          })
-          .catch((error) => {
-            const payload: MainToRendererMessage = {
-              type: "ipc-renderer-invoke-result",
-              requestId,
-              ok: false,
-              errorMessage: errorMessage(error),
-            };
-            if (socket.readyState === WebSocket.OPEN) {
-              socket.send(JSON.stringify(payload));
-            }
-          });
+      let session = sessions.get(hello.connectionId);
+      if (!session) {
+        if (hello.serverEpoch !== null) {
+          sendBridgeReset(socket, "reconnection session expired");
+          return;
+        }
+
+        session = new ReliableBridgeSession({
+          connectionId: hello.connectionId,
+          serverEpoch,
+          onDispose: () => {
+            sessions.delete(hello.connectionId);
+          },
+          onMessage: (message) => {
+            handleRendererMessage(session!, message);
+          },
+        });
+        sessions.set(hello.connectionId, session);
       }
+
+      session.attach(socket);
     });
   });
+
+  function handleRendererMessage(
+    session: ReliableBridgeSession<
+      RendererToMainMessage,
+      MainToRendererMessage
+    >,
+    message: RendererToMainMessage,
+  ): void {
+    if (message.type === "ipc-renderer-send") {
+      bridgeState.handleRendererSend?.(message.channel, message.args);
+      return;
+    }
+
+    if (message.type === "workspace-directory-entries-request") {
+      const { requestId } = message;
+      getWorkspaceDirectoryEntries(message)
+        .then((result) => {
+          session.send({
+            type: "workspace-directory-entries-result",
+            requestId,
+            ok: true,
+            result,
+          });
+        })
+        .catch((error) => {
+          session.send({
+            type: "workspace-directory-entries-result",
+            requestId,
+            ok: false,
+            errorMessage: errorMessage(error),
+          });
+        });
+      return;
+    }
+
+    if (message.type === "ipc-renderer-invoke") {
+      const { channel, requestId, args } = message;
+      Promise.resolve(
+        bridgeState.handleRendererInvoke?.(channel, args) ??
+          Promise.reject(
+            new Error(`[ipc-bridge] no ipcMain.handle for channel ${channel}`),
+          ),
+      )
+        .then((result) => {
+          session.send({
+            type: "ipc-renderer-invoke-result",
+            requestId,
+            ok: true,
+            result,
+          });
+        })
+        .catch((error) => {
+          session.send({
+            type: "ipc-renderer-invoke-result",
+            requestId,
+            ok: false,
+            errorMessage: errorMessage(error),
+          });
+        });
+    }
+  }
 
   await app.listen({ host: options.host, port: options.port });
   console.log(`IPC bridge listening at ws://${options.host}:${options.port}`);

@@ -51,6 +51,14 @@ directly (file picker, workspace picker). today, the remaining parts of shim are
 for connecting the in memory router to the browser history and setting up the
 sidebar behavior on mobile.
 
+the websocket is a replaceable transport for a short-lived reliable bridge
+session. both sides assign sequence numbers, acknowledge received messages and
+retain unacknowledged messages. when the socket reconnects, the browser presents
+the same connection id and the server attaches the new socket to the existing
+session before replaying anything that was not acknowledged. bridge sessions are
+kept for five minutes after a socket closes and are bounded to 16 mib of
+unacknowledged messages.
+
 the ipc websocket is hosted by [main.ts](./src/server/main.ts). this process
 binds a port and listens for incoming websocket connections. it also shims
 electron (see `installModuleAliasHook`) before loading the electron shell

@@ -63,7 +63,44 @@ type MainToRendererMessage =
       errorMessage: string;
     };
 
+type BridgeServerFrame =
+  | {
+      type: "bridge-ready";
+      connectionId: string;
+      serverEpoch: string;
+    }
+  | {
+      type: "bridge-data";
+      id: number;
+      ack: number;
+      message: MainToRendererMessage;
+    }
+  | {
+      type: "bridge-ack";
+      ack: number;
+    }
+  | {
+      type: "bridge-replay-request";
+      ack: number;
+    }
+  | {
+      type: "bridge-keepalive";
+    }
+  | {
+      type: "bridge-reset";
+      reason: string;
+    };
+
+type OutgoingBridgeMessage = {
+  id: number;
+  message: RendererToMainMessage;
+  byteLength: number;
+};
+
+const BRIDGE_PROTOCOL_VERSION = 2;
 const RECONNECT_DELAY_MS = 1_000;
+const SOCKET_TIMEOUT_MS = 20_000;
+const MAX_UNACKED_BYTES = 16 * 1024 * 1_024;
 
 type MemoryNavigationChange = {
   action: "POP" | "PUSH" | "REPLACE";
@@ -125,7 +162,16 @@ declare const __CODEX_APP_VERSION__: string;
 let requestCounter = 0;
 let socket: WebSocket | null = null;
 let reconnectTimeoutId: number | null = null;
-const outboundQueue: RendererToMainMessage[] = [];
+let socketTimeoutId: number | null = null;
+let socketReady = false;
+let lastIncomingAt = Date.now();
+let serverEpoch: string | null = null;
+let outgoingMessageId = 0;
+let outgoingAckId = 0;
+let outgoingUnackedBytes = 0;
+let incomingMessageId = 0;
+const connectionId = crypto.randomUUID();
+let outgoingUnacked: OutgoingBridgeMessage[] = [];
 const pendingInvokes = new Map<
   string,
   {
@@ -192,15 +238,6 @@ function handleIncomingMessage(message: MainToRendererMessage): void {
   }
 }
 
-function flushOutboundQueue(): void {
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
-    return;
-  }
-  for (const message of outboundQueue.splice(0)) {
-    socket.send(JSON.stringify(message));
-  }
-}
-
 function scheduleReconnect(): void {
   if (reconnectTimeoutId !== null) {
     return;
@@ -220,16 +257,36 @@ function ensureSocket(): void {
     return;
   }
 
-  socket = new WebSocket(
+  const nextSocket = new WebSocket(
     `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/__backend/ipc`,
   );
-  socket.addEventListener("open", () => {
-    flushOutboundQueue();
+  socket = nextSocket;
+  socketReady = false;
+  nextSocket.addEventListener("open", () => {
+    if (socket !== nextSocket) {
+      return;
+    }
+    lastIncomingAt = Date.now();
+    sendRaw({
+      type: "bridge-hello",
+      protocolVersion: BRIDGE_PROTOCOL_VERSION,
+      connectionId,
+      serverEpoch,
+    });
+    startSocketTimeout(nextSocket);
   });
-  socket.addEventListener("message", (event) => {
+  nextSocket.addEventListener("message", (event) => {
+    if (socket !== nextSocket) {
+      return;
+    }
+    lastIncomingAt = Date.now();
     try {
-      const message = JSON.parse(String(event.data)) as MainToRendererMessage;
-      handleIncomingMessage(message);
+      const frame = JSON.parse(String(event.data)) as BridgeServerFrame;
+      if (!frame || typeof frame !== "object" || !("type" in frame)) {
+        resetBridge("invalid reliable bridge frame");
+        return;
+      }
+      handleBridgeFrame(frame);
     } catch (error) {
       console.error(
         "[electron-stub] failed to parse IPC bridge message",
@@ -237,18 +294,191 @@ function ensureSocket(): void {
       );
     }
   });
-  socket.addEventListener("close", () => {
+  nextSocket.addEventListener("close", () => {
+    if (socket !== nextSocket) {
+      return;
+    }
+    stopSocketTimeout();
+    socket = null;
+    socketReady = false;
     scheduleReconnect();
   });
-  socket.addEventListener("error", () => {
-    scheduleReconnect();
+  nextSocket.addEventListener("error", () => {
+    if (socket === nextSocket) {
+      nextSocket.close();
+    }
   });
 }
 
 function enqueueMessage(message: RendererToMainMessage): void {
-  outboundQueue.push(message);
+  const byteLength = new TextEncoder().encode(JSON.stringify(message)).length;
+  const outgoing = {
+    id: ++outgoingMessageId,
+    message,
+    byteLength,
+  };
+  outgoingUnacked.push(outgoing);
+  outgoingUnackedBytes += byteLength;
+  if (outgoingUnackedBytes > MAX_UNACKED_BYTES) {
+    resetBridge("reliable bridge buffer exceeded");
+    return;
+  }
   ensureSocket();
-  flushOutboundQueue();
+  sendData(outgoing);
+}
+
+function handleBridgeFrame(frame: BridgeServerFrame): void {
+  if (frame.type === "bridge-ready") {
+    if (frame.connectionId !== connectionId) {
+      resetBridge("reliable bridge connection mismatch");
+      return;
+    }
+    if (serverEpoch !== null && serverEpoch !== frame.serverEpoch) {
+      resetBridge("backend restarted");
+      return;
+    }
+    serverEpoch = frame.serverEpoch;
+    socketReady = true;
+    sendAck();
+    replayUnacked();
+    return;
+  }
+
+  if (frame.type === "bridge-reset") {
+    resetBridge(frame.reason);
+    return;
+  }
+
+  if (frame.type === "bridge-data") {
+    if (!acceptAck(frame.ack)) {
+      return;
+    }
+    acceptMessage(frame);
+    return;
+  }
+
+  if (frame.type === "bridge-ack") {
+    acceptAck(frame.ack);
+    return;
+  }
+
+  if (frame.type === "bridge-replay-request") {
+    if (acceptAck(frame.ack)) {
+      replayUnacked();
+    }
+    return;
+  }
+
+  if (frame.type === "bridge-keepalive") {
+    sendRaw({ type: "bridge-keepalive" });
+    return;
+  }
+
+  resetBridge("unsupported reliable bridge frame");
+}
+
+function acceptMessage(
+  frame: Extract<BridgeServerFrame, { type: "bridge-data" }>,
+): void {
+  if (!Number.isSafeInteger(frame.id) || frame.id <= 0) {
+    resetBridge("invalid reliable bridge message id");
+    return;
+  }
+
+  if (frame.id === incomingMessageId + 1) {
+    incomingMessageId = frame.id;
+    handleIncomingMessage(frame.message);
+    sendAck();
+    return;
+  }
+
+  if (frame.id <= incomingMessageId) {
+    sendAck();
+    return;
+  }
+
+  sendRaw({ type: "bridge-replay-request", ack: incomingMessageId });
+}
+
+function acceptAck(ack: number): boolean {
+  if (!Number.isSafeInteger(ack) || ack < 0 || ack > outgoingMessageId) {
+    resetBridge("invalid reliable bridge acknowledgement");
+    return false;
+  }
+  if (ack <= outgoingAckId) {
+    return true;
+  }
+
+  outgoingAckId = ack;
+  const acknowledged = outgoingUnacked.filter((message) => message.id <= ack);
+  outgoingUnackedBytes -= acknowledged.reduce(
+    (total, message) => total + message.byteLength,
+    0,
+  );
+  outgoingUnacked = outgoingUnacked.filter((message) => message.id > ack);
+  return true;
+}
+
+function replayUnacked(): void {
+  for (const message of outgoingUnacked) {
+    sendData(message);
+  }
+}
+
+function sendData(message: OutgoingBridgeMessage): void {
+  if (!socketReady) {
+    return;
+  }
+  sendRaw({
+    type: "bridge-data",
+    id: message.id,
+    ack: incomingMessageId,
+    message: message.message,
+  });
+}
+
+function sendAck(): void {
+  if (!socketReady) {
+    return;
+  }
+  sendRaw({ type: "bridge-ack", ack: incomingMessageId });
+}
+
+function sendRaw(frame: object): void {
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  try {
+    socket.send(JSON.stringify(frame));
+  } catch {
+    socket.close();
+  }
+}
+
+function startSocketTimeout(currentSocket: WebSocket): void {
+  stopSocketTimeout();
+  socketTimeoutId = window.setInterval(() => {
+    if (
+      socket === currentSocket &&
+      Date.now() - lastIncomingAt > SOCKET_TIMEOUT_MS
+    ) {
+      currentSocket.close();
+    }
+  }, 5_000);
+}
+
+function stopSocketTimeout(): void {
+  if (socketTimeoutId !== null) {
+    window.clearInterval(socketTimeoutId);
+    socketTimeoutId = null;
+  }
+}
+
+function resetBridge(reason: string): void {
+  console.error(`[electron-stub] reliable IPC bridge reset: ${reason}`);
+  stopSocketTimeout();
+  socket?.close();
+  window.location.reload();
 }
 
 function nextRequestId(): string {

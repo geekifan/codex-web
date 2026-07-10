@@ -1,0 +1,149 @@
+#!/usr/bin/env node
+
+const assert = require("node:assert/strict");
+const { EventEmitter } = require("node:events");
+const test = require("node:test");
+const { ReliableBridgeSession } = require("../src/server/reliable-bridge.js");
+
+class FakeSocket extends EventEmitter {
+  readyState = 1;
+  sent = [];
+
+  send(payload) {
+    this.sent.push(JSON.parse(String(payload)));
+  }
+
+  close() {
+    if (this.readyState === 3) {
+      return;
+    }
+    this.readyState = 3;
+    this.emit("close");
+  }
+
+  terminate() {
+    this.close();
+  }
+
+  receive(frame) {
+    this.emit("message", Buffer.from(JSON.stringify(frame)));
+  }
+}
+
+function createSession(received) {
+  let disposed = false;
+  const session = new ReliableBridgeSession({
+    connectionId: "connection-a",
+    serverEpoch: "epoch-a",
+    graceTimeMs: 60_000,
+    onDispose: () => {
+      disposed = true;
+    },
+    onMessage: (message) => {
+      received.push(message);
+    },
+  });
+  return { session, isDisposed: () => disposed };
+}
+
+function dataFrames(socket) {
+  return socket.sent.filter((frame) => frame.type === "bridge-data");
+}
+
+test("replays unacknowledged server messages after socket replacement", () => {
+  const { session } = createSession([]);
+  const firstSocket = new FakeSocket();
+  session.attach(firstSocket);
+  session.send({ value: "one" });
+  firstSocket.close();
+  session.send({ value: "two" });
+
+  const secondSocket = new FakeSocket();
+  session.attach(secondSocket);
+
+  assert.deepEqual(dataFrames(secondSocket), [
+    { type: "bridge-data", id: 1, ack: 0, message: { value: "one" } },
+    { type: "bridge-data", id: 2, ack: 0, message: { value: "two" } },
+  ]);
+
+  secondSocket.receive({ type: "bridge-ack", ack: 2 });
+  secondSocket.close();
+  const thirdSocket = new FakeSocket();
+  session.attach(thirdSocket);
+  assert.deepEqual(dataFrames(thirdSocket), []);
+  session.dispose("test complete");
+});
+
+test("deduplicates replayed client messages", () => {
+  const received = [];
+  const { session } = createSession(received);
+  const firstSocket = new FakeSocket();
+  session.attach(firstSocket);
+  firstSocket.receive({
+    type: "bridge-data",
+    id: 1,
+    ack: 0,
+    message: { value: "one" },
+  });
+  firstSocket.close();
+
+  const secondSocket = new FakeSocket();
+  session.attach(secondSocket);
+  secondSocket.receive({
+    type: "bridge-data",
+    id: 1,
+    ack: 0,
+    message: { value: "one" },
+  });
+  secondSocket.receive({
+    type: "bridge-data",
+    id: 2,
+    ack: 0,
+    message: { value: "two" },
+  });
+
+  assert.deepEqual(received, [{ value: "one" }, { value: "two" }]);
+  session.dispose("test complete");
+});
+
+test("requests replay when a client message has a gap", () => {
+  const received = [];
+  const { session } = createSession(received);
+  const socket = new FakeSocket();
+  session.attach(socket);
+  socket.receive({
+    type: "bridge-data",
+    id: 2,
+    ack: 0,
+    message: { value: "two" },
+  });
+
+  assert.deepEqual(received, []);
+  assert.deepEqual(socket.sent.at(-1), {
+    type: "bridge-replay-request",
+    ack: 0,
+  });
+  session.dispose("test complete");
+});
+
+test("keeps the replacement socket alive when taking over", () => {
+  const received = [];
+  const { session, isDisposed } = createSession(received);
+  const firstSocket = new FakeSocket();
+  const secondSocket = new FakeSocket();
+  session.attach(firstSocket);
+  session.attach(secondSocket);
+
+  secondSocket.receive({
+    type: "bridge-data",
+    id: 1,
+    ack: 0,
+    message: { value: "active" },
+  });
+
+  assert.equal(firstSocket.readyState, 3);
+  assert.equal(secondSocket.readyState, 1);
+  assert.equal(isDisposed(), false);
+  assert.deepEqual(received, [{ value: "active" }]);
+  session.dispose("test complete");
+});
