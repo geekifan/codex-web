@@ -1,6 +1,6 @@
 --- a/webview/assets/app-initial~app-main~pull-request-code-review~onboarding-page~hotkey-window-thread-page~cha~b76hmflu-y0KJWbm3.js
 +++ b/webview/assets/app-initial~app-main~pull-request-code-review~onboarding-page~hotkey-window-thread-page~cha~b76hmflu-y0KJWbm3.js
-@@ -48433,7 +48433,18 @@
+@@ -48433,7 +48433,17 @@
            (super(), (this.#e = e));
          }
        }),
@@ -9,8 +9,7 @@
 +        appActions: Z1e,
 +        appUpdates: t0e,
 +        downloads: p0e,
-+        workspaceFiles:
-+          window.__ELECTRON_SHIM__?.services?.workspaceFiles ?? {},
++        workspaceFiles: {},
 +        requestUserInputAutoResolution: {
 +          recordConversationActivity: () => undefined,
 +          setConversationPresented: () => undefined,
@@ -20,7 +19,7 @@
    });
  function v0e() {
    let { port1: e, port2: t } = new MessageChannel();
-@@ -48447,6 +48458,10 @@
+@@ -48447,6 +48457,10 @@
    );
  }
  async function y0e() {
@@ -31,11 +30,3 @@
    ((by = v0e()), (xy = await by.services), xy.devboxService);
  }
  var by,
-@@ -153124,6 +153139,7 @@
-   };
- }
- function Fin({ hostId: e, path: t, resourceUri: n }) {
-+  if (window.__ELECTRON_SHIM__ != null && e !== `local`) return;
-   let r = xy.workspaceFiles.writeIfMatch;
-   if (r != null)
-     return async ({ uri: i, ...a }) =>

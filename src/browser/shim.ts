@@ -10,22 +10,6 @@ import {
   openSelectWorkspaceRootDialog,
   type WorkspaceDirectoryEntries,
 } from "./workspace-root-dialog";
-import {
-  BRIDGE_HEADER_LENGTH,
-  BRIDGE_PROTOCOL_VERSION,
-  BridgeFrameType,
-  decodeBridgeFrame,
-  encodeBridgeFrame,
-  encodeBridgeFramePayload,
-  encodeBridgeValue,
-  type BridgeFrame,
-} from "../shared/bridge-protocol";
-import {
-  WORKSPACE_FILE_CHUNK_BYTES,
-  type WorkspaceFileMainMessage,
-  type WorkspaceFileRendererMessage,
-  type WorkspaceFileRepresentation,
-} from "../shared/workspace-files";
 
 type IpcListener = (event: unknown, ...args: unknown[]) => void;
 
@@ -46,8 +30,7 @@ type RendererToMainMessage =
       requestId: string;
       directoryPath: string | null;
       directoriesOnly: boolean;
-    }
-  | WorkspaceFileRendererMessage;
+    };
 
 type MainToRendererMessage =
   | {
@@ -78,15 +61,43 @@ type MainToRendererMessage =
       requestId: string;
       ok: false;
       errorMessage: string;
+    };
+
+type BridgeServerFrame =
+  | {
+      type: "bridge-ready";
+      connectionId: string;
+      serverEpoch: string;
     }
-  | WorkspaceFileMainMessage;
+  | {
+      type: "bridge-data";
+      id: number;
+      ack: number;
+      message: MainToRendererMessage;
+    }
+  | {
+      type: "bridge-ack";
+      ack: number;
+    }
+  | {
+      type: "bridge-replay-request";
+      ack: number;
+    }
+  | {
+      type: "bridge-keepalive";
+    }
+  | {
+      type: "bridge-reset";
+      reason: string;
+    };
 
 type OutgoingBridgeMessage = {
   id: number;
-  payload: Uint8Array;
+  message: RendererToMainMessage;
   byteLength: number;
 };
 
+const BRIDGE_PROTOCOL_VERSION = 2;
 const RECONNECT_DELAY_MS = 1_000;
 const SOCKET_TIMEOUT_MS = 20_000;
 const MAX_UNACKED_BYTES = 64 * 1024 * 1_024;
@@ -109,23 +120,6 @@ type ElectronShimState = {
   initialSidebarState?: boolean;
   closeSidebar?: () => void;
   services?: {
-    workspaceFiles?: {
-      read?: (args: {
-        hostId: string;
-        path: string;
-        representation: WorkspaceFileRepresentation;
-      }) => Promise<{ etag: string; text?: string; blob?: string }>;
-      writeIfMatch?: (args: {
-        bytes: Uint8Array;
-        hostId: string;
-        ifMatch: string;
-        path: string;
-      }) => Promise<
-        | { outcome: "saved"; etag: string }
-        | { outcome: "conflict"; etag: string }
-        | { outcome: "too-large"; maxBytes: number }
-      >;
-    };
     requestUserInputAutoResolution?: {
       recordConversationActivity?: (args: {
         conversationId: string;
@@ -204,35 +198,6 @@ const pendingDirectoryEntries = new Map<
     resolve: (value: WorkspaceDirectoryEntries) => void;
   }
 >();
-type PendingWorkspaceRead = {
-  byteLength?: number;
-  chunks: Uint8Array[];
-  etag?: string;
-  expectedOffset: number;
-  reject: (reason?: unknown) => void;
-  representation?: "blob" | "text";
-  resolve: (value: { etag: string; text?: string; blob?: string }) => void;
-  transferId?: string;
-};
-type PendingWorkspaceWrite = {
-  reject: (reason?: unknown) => void;
-  resolve: (
-    value:
-      | { outcome: "saved"; etag: string }
-      | { outcome: "conflict"; etag: string }
-      | { outcome: "too-large"; maxBytes: number },
-  ) => void;
-  ready?: () => void;
-  readyReject?: (reason?: unknown) => void;
-  chunk?: {
-    offset: number;
-    resolve: () => void;
-    reject: (reason?: unknown) => void;
-  };
-  transferId: string;
-};
-const pendingWorkspaceReads = new Map<string, PendingWorkspaceRead>();
-const pendingWorkspaceWrites = new Map<string, PendingWorkspaceWrite>();
 const rendererListeners = new Map<string, Set<IpcListener>>();
 
 function unimplemented(method: string): never {
@@ -252,129 +217,6 @@ export function emitRendererEvent(channel: string, args: unknown[]): void {
 }
 
 function handleIncomingMessage(message: MainToRendererMessage): void {
-  if (message.type === "workspace-file-read-start") {
-    const pending = pendingWorkspaceReads.get(message.requestId);
-    if (!pending || pending.transferId) {
-      return;
-    }
-    pending.transferId = message.transferId;
-    pending.etag = message.etag;
-    pending.byteLength = message.byteLength;
-    pending.representation = message.representation;
-    return;
-  }
-
-  if (message.type === "workspace-file-read-chunk") {
-    const pending = pendingWorkspaceReads.get(message.requestId);
-    if (
-      !pending ||
-      pending.transferId !== message.transferId ||
-      pending.expectedOffset !== message.offset
-    ) {
-      return;
-    }
-    pending.chunks.push(message.bytes);
-    pending.expectedOffset += message.bytes.byteLength;
-    return;
-  }
-
-  if (message.type === "workspace-file-read-end") {
-    const pending = pendingWorkspaceReads.get(message.requestId);
-    if (
-      !pending ||
-      pending.transferId !== message.transferId ||
-      pending.etag == null ||
-      pending.representation == null ||
-      pending.expectedOffset !== pending.byteLength
-    ) {
-      pending?.reject(new Error("invalid workspace file read result"));
-      pendingWorkspaceReads.delete(message.requestId);
-      return;
-    }
-    pendingWorkspaceReads.delete(message.requestId);
-    if (pending.representation === "text") {
-      const decoder = new TextDecoder("utf-8");
-      let text = "";
-      for (const chunk of pending.chunks) {
-        text += decoder.decode(chunk, { stream: true });
-      }
-      text += decoder.decode();
-      pending.resolve({ etag: pending.etag, text });
-      return;
-    }
-    pending.resolve({
-      etag: pending.etag,
-      blob: bytesToBase64(pending.chunks),
-    });
-    return;
-  }
-
-  if (message.type === "workspace-file-read-error") {
-    const pending = pendingWorkspaceReads.get(message.requestId);
-    if (!pending) {
-      return;
-    }
-    pendingWorkspaceReads.delete(message.requestId);
-    pending.reject(new Error(message.errorMessage));
-    return;
-  }
-
-  if (message.type === "workspace-file-write-ready") {
-    const pending = pendingWorkspaceWrites.get(message.requestId);
-    if (pending?.transferId === message.transferId) {
-      pending.ready?.();
-    }
-    return;
-  }
-
-  if (message.type === "workspace-file-write-chunk-result") {
-    const pending = pendingWorkspaceWrites.get(message.requestId);
-    const chunk = pending?.chunk;
-    if (
-      !pending ||
-      pending.transferId !== message.transferId ||
-      !chunk ||
-      chunk.offset !== message.offset
-    ) {
-      return;
-    }
-    pending.chunk = undefined;
-    if (message.ok) {
-      chunk.resolve();
-    } else {
-      chunk.reject(new Error(message.errorMessage));
-    }
-    return;
-  }
-
-  if (message.type === "workspace-file-write-result") {
-    const pending = pendingWorkspaceWrites.get(message.requestId);
-    if (!pending) {
-      return;
-    }
-    pendingWorkspaceWrites.delete(message.requestId);
-    pending.resolve(
-      message.outcome === "too-large"
-        ? { outcome: message.outcome, maxBytes: message.maxBytes }
-        : { outcome: message.outcome, etag: message.etag },
-    );
-    pending.readyReject?.(new Error("workspace file write completed"));
-    return;
-  }
-
-  if (message.type === "workspace-file-write-error") {
-    const pending = pendingWorkspaceWrites.get(message.requestId);
-    if (!pending) {
-      return;
-    }
-    pendingWorkspaceWrites.delete(message.requestId);
-    const error = new Error(message.errorMessage);
-    pending.readyReject?.(error);
-    pending.chunk?.reject(error);
-    pending.reject(error);
-    return;
-  }
-
   if (message.type === "ipc-main-event") {
     emitRendererEvent(message.channel, message.args);
     return;
@@ -430,7 +272,6 @@ function ensureSocket(): void {
   const nextSocket = new WebSocket(
     `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/__backend/ipc`,
   );
-  nextSocket.binaryType = "arraybuffer";
   socket = nextSocket;
   socketReady = false;
   nextSocket.addEventListener("open", () => {
@@ -438,7 +279,7 @@ function ensureSocket(): void {
       return;
     }
     lastIncomingAt = Date.now();
-    sendFrame(BridgeFrameType.Control, 0, 0, {
+    sendRaw({
       type: "bridge-hello",
       protocolVersion: BRIDGE_PROTOCOL_VERSION,
       connectionId,
@@ -452,17 +293,17 @@ function ensureSocket(): void {
     }
     lastIncomingAt = Date.now();
     try {
-      if (!(event.data instanceof ArrayBuffer)) {
-        throw new Error("binary bridge frame required");
+      const frame = JSON.parse(String(event.data)) as BridgeServerFrame;
+      if (!frame || typeof frame !== "object" || !("type" in frame)) {
+        resetBridge("invalid reliable bridge frame");
+        return;
       }
-      const frame = decodeBridgeFrame(new Uint8Array(event.data));
       handleBridgeFrame(frame);
     } catch (error) {
       console.error(
         "[electron-stub] failed to parse IPC bridge message",
         error,
       );
-      resetBridge("invalid reliable bridge frame");
     }
   });
   nextSocket.addEventListener("close", () => {
@@ -482,21 +323,14 @@ function ensureSocket(): void {
 }
 
 function enqueueMessage(message: RendererToMainMessage): void {
-  let payload: Uint8Array;
-  try {
-    payload = encodeBridgeValue(message);
-  } catch (error) {
-    console.error("[electron-stub] failed to encode IPC bridge message", error);
-    resetBridge("failed to encode reliable bridge message");
-    return;
-  }
+  const byteLength = new TextEncoder().encode(JSON.stringify(message)).length;
   const outgoing = {
     id: ++outgoingMessageId,
-    payload,
-    byteLength: BRIDGE_HEADER_LENGTH + payload.byteLength,
+    message,
+    byteLength,
   };
   outgoingUnacked.push(outgoing);
-  outgoingUnackedBytes += outgoing.byteLength;
+  outgoingUnackedBytes += byteLength;
   if (outgoingUnackedBytes > MAX_UNACKED_BYTES) {
     resetBridge("reliable bridge buffer exceeded");
     return;
@@ -505,36 +339,17 @@ function enqueueMessage(message: RendererToMainMessage): void {
   pumpOutgoing();
 }
 
-function handleBridgeFrame(frame: BridgeFrame): void {
-  if (frame.type === BridgeFrameType.Control) {
-    if (!isRecord(frame.payload) || typeof frame.payload.type !== "string") {
-      resetBridge("invalid reliable bridge control message");
-      return;
-    }
-    if (frame.payload.type === "bridge-reset") {
-      resetBridge(
-        typeof frame.payload.reason === "string"
-          ? frame.payload.reason
-          : "reliable bridge reset",
-      );
-      return;
-    }
-    if (frame.payload.type !== "bridge-ready") {
-      resetBridge("unsupported reliable bridge control message");
-      return;
-    }
-    if (frame.payload.connectionId !== connectionId) {
+function handleBridgeFrame(frame: BridgeServerFrame): void {
+  if (frame.type === "bridge-ready") {
+    if (frame.connectionId !== connectionId) {
       resetBridge("reliable bridge connection mismatch");
       return;
     }
-    if (
-      typeof frame.payload.serverEpoch !== "string" ||
-      (serverEpoch !== null && serverEpoch !== frame.payload.serverEpoch)
-    ) {
+    if (serverEpoch !== null && serverEpoch !== frame.serverEpoch) {
       resetBridge("backend restarted");
       return;
     }
-    serverEpoch = frame.payload.serverEpoch;
+    serverEpoch = frame.serverEpoch;
     socketReady = true;
     sendAck();
     outgoingSentId = outgoingAckId;
@@ -542,20 +357,25 @@ function handleBridgeFrame(frame: BridgeFrame): void {
     return;
   }
 
-  if (frame.type === BridgeFrameType.Regular) {
-    if (!acceptAck(frame.ack)) {
-      return;
-    }
-    acceptMessage(frame.id, frame.payload);
+  if (frame.type === "bridge-reset") {
+    resetBridge(frame.reason);
     return;
   }
 
-  if (frame.type === BridgeFrameType.Ack) {
+  if (frame.type === "bridge-data") {
+    if (!acceptAck(frame.ack)) {
+      return;
+    }
+    acceptMessage(frame);
+    return;
+  }
+
+  if (frame.type === "bridge-ack") {
     acceptAck(frame.ack);
     return;
   }
 
-  if (frame.type === BridgeFrameType.ReplayRequest) {
+  if (frame.type === "bridge-replay-request") {
     if (acceptAck(frame.ack, false)) {
       outgoingSentId = frame.ack;
       pumpOutgoing();
@@ -563,33 +383,35 @@ function handleBridgeFrame(frame: BridgeFrame): void {
     return;
   }
 
-  if (frame.type === BridgeFrameType.KeepAlive) {
-    sendFrame(BridgeFrameType.KeepAlive, 0, incomingMessageId);
+  if (frame.type === "bridge-keepalive") {
+    sendRaw({ type: "bridge-keepalive" });
     return;
   }
 
   resetBridge("unsupported reliable bridge frame");
 }
 
-function acceptMessage(id: number, message: unknown): void {
-  if (!Number.isSafeInteger(id) || id <= 0 || !isRecord(message)) {
+function acceptMessage(
+  frame: Extract<BridgeServerFrame, { type: "bridge-data" }>,
+): void {
+  if (!Number.isSafeInteger(frame.id) || frame.id <= 0) {
     resetBridge("invalid reliable bridge message id");
     return;
   }
 
-  if (id === incomingMessageId + 1) {
-    incomingMessageId = id;
-    handleIncomingMessage(message as MainToRendererMessage);
+  if (frame.id === incomingMessageId + 1) {
+    incomingMessageId = frame.id;
+    handleIncomingMessage(frame.message);
     sendAck();
     return;
   }
 
-  if (id <= incomingMessageId) {
+  if (frame.id <= incomingMessageId) {
     sendAck();
     return;
   }
 
-  sendFrame(BridgeFrameType.ReplayRequest, 0, incomingMessageId);
+  sendRaw({ type: "bridge-replay-request", ack: incomingMessageId });
 }
 
 function acceptAck(ack: number, pump = true): boolean {
@@ -642,48 +464,27 @@ function sendData(message: OutgoingBridgeMessage): void {
   if (!socketReady) {
     return;
   }
-  sendEncodedFrame(
-    BridgeFrameType.Regular,
-    message.id,
-    incomingMessageId,
-    message.payload,
-  );
+  sendRaw({
+    type: "bridge-data",
+    id: message.id,
+    ack: incomingMessageId,
+    message: message.message,
+  });
 }
 
 function sendAck(): void {
   if (!socketReady) {
     return;
   }
-  sendFrame(BridgeFrameType.Ack, 0, incomingMessageId);
+  sendRaw({ type: "bridge-ack", ack: incomingMessageId });
 }
 
-function sendFrame(
-  type: (typeof BridgeFrameType)[keyof typeof BridgeFrameType],
-  id: number,
-  ack: number,
-  payload?: unknown,
-): void {
+function sendRaw(frame: object): void {
   if (!socket || socket.readyState !== WebSocket.OPEN) {
     return;
   }
   try {
-    socket.send(encodeBridgeFrame({ type, id, ack, payload }));
-  } catch {
-    socket.close();
-  }
-}
-
-function sendEncodedFrame(
-  type: (typeof BridgeFrameType)[keyof typeof BridgeFrameType],
-  id: number,
-  ack: number,
-  payload: Uint8Array,
-): void {
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
-    return;
-  }
-  try {
-    socket.send(encodeBridgeFramePayload(type, id, ack, payload));
+    socket.send(JSON.stringify(frame));
   } catch {
     socket.close();
   }
@@ -789,153 +590,6 @@ function requestWorkspaceDirectoryEntries(
   });
 }
 
-function readWorkspaceFile(args: {
-  hostId: string;
-  path: string;
-  representation: WorkspaceFileRepresentation;
-}): Promise<{ etag: string; text?: string; blob?: string }> {
-  if (args.hostId !== "local") {
-    return Promise.reject(
-      new Error(`workspace files are not supported for host ${args.hostId}`),
-    );
-  }
-  const requestId = nextRequestId();
-  return new Promise((resolve, reject) => {
-    pendingWorkspaceReads.set(requestId, {
-      chunks: [],
-      expectedOffset: 0,
-      reject,
-      resolve,
-    });
-    enqueueMessage({
-      type: "workspace-file-read-request",
-      requestId,
-      ...args,
-    });
-  });
-}
-
-function writeWorkspaceFileIfMatch(args: {
-  bytes: Uint8Array;
-  hostId: string;
-  ifMatch: string;
-  path: string;
-}): Promise<
-  | { outcome: "saved"; etag: string }
-  | { outcome: "conflict"; etag: string }
-  | { outcome: "too-large"; maxBytes: number }
-> {
-  if (args.hostId !== "local") {
-    return Promise.reject(
-      new Error(`workspace files are not supported for host ${args.hostId}`),
-    );
-  }
-  const requestId = nextRequestId();
-  const transferId = crypto.randomUUID();
-  return new Promise((resolve, reject) => {
-    const pending: PendingWorkspaceWrite = {
-      reject,
-      resolve,
-      transferId,
-    };
-    pendingWorkspaceWrites.set(requestId, pending);
-    void (async () => {
-      try {
-        await new Promise<void>((readyResolve, readyReject) => {
-          pending.ready = readyResolve;
-          pending.readyReject = readyReject;
-          enqueueMessage({
-            type: "workspace-file-write-start",
-            requestId,
-            transferId,
-            hostId: args.hostId,
-            path: args.path,
-            ifMatch: args.ifMatch,
-            byteLength: args.bytes.byteLength,
-          });
-        });
-        pending.ready = undefined;
-        pending.readyReject = undefined;
-
-        for (
-          let offset = 0;
-          offset < args.bytes.byteLength;
-          offset += WORKSPACE_FILE_CHUNK_BYTES
-        ) {
-          const bytes = args.bytes.subarray(
-            offset,
-            Math.min(
-              offset + WORKSPACE_FILE_CHUNK_BYTES,
-              args.bytes.byteLength,
-            ),
-          );
-          await new Promise<void>((chunkResolve, chunkReject) => {
-            pending.chunk = {
-              offset,
-              resolve: chunkResolve,
-              reject: chunkReject,
-            };
-            enqueueMessage({
-              type: "workspace-file-write-chunk",
-              requestId,
-              transferId,
-              offset,
-              bytes,
-            });
-          });
-        }
-        enqueueMessage({
-          type: "workspace-file-write-commit",
-          requestId,
-          transferId,
-        });
-      } catch (error) {
-        if (!pendingWorkspaceWrites.has(requestId)) {
-          return;
-        }
-        pendingWorkspaceWrites.delete(requestId);
-        enqueueMessage({
-          type: "workspace-file-write-abort",
-          transferId,
-        });
-        reject(error);
-      }
-    })();
-  });
-}
-
-function bytesToBase64(chunks: Uint8Array[]): string {
-  let result = "";
-  let remainder = new Uint8Array();
-  for (const chunk of chunks) {
-    const combined = new Uint8Array(remainder.byteLength + chunk.byteLength);
-    combined.set(remainder);
-    combined.set(chunk, remainder.byteLength);
-    const completeLength = combined.byteLength - (combined.byteLength % 3);
-    if (completeLength > 0) {
-      result += binaryBytesToBase64(combined.subarray(0, completeLength));
-    }
-    remainder = combined.slice(completeLength);
-  }
-  if (remainder.byteLength > 0) {
-    result += binaryBytesToBase64(remainder);
-  }
-  return result;
-}
-
-function binaryBytesToBase64(bytes: Uint8Array): string {
-  const parts: string[] = [];
-  for (let offset = 0; offset < bytes.byteLength; offset += 0x8000) {
-    const end = Math.min(offset + 0x8000, bytes.byteLength);
-    let part = "";
-    for (let index = offset; index < end; index += 1) {
-      part += String.fromCharCode(bytes[index]!);
-    }
-    parts.push(part);
-  }
-  return btoa(parts.join(""));
-}
-
 const themeMediaQuery = matchMedia("(prefers-color-scheme: dark)");
 const mobileMediaQuery = matchMedia("(max-width: 768px)");
 const initialSidebarState = !mobileMediaQuery.matches;
@@ -953,11 +607,6 @@ Object.assign(globalThis, {
 
 electronShim.services = {
   ...electronShim.services,
-  workspaceFiles: {
-    ...electronShim.services?.workspaceFiles,
-    read: readWorkspaceFile,
-    writeIfMatch: writeWorkspaceFileIfMatch,
-  },
   requestUserInputAutoResolution: {
     ...electronShim.services?.requestUserInputAutoResolution,
     recordConversationActivity: () => undefined,
@@ -1166,7 +815,7 @@ export const ipcRenderer = {
 ensureSocket();
 window.addEventListener("pagehide", () => {
   if (socketReady) {
-    sendFrame(BridgeFrameType.Disconnect, 0, incomingMessageId);
+    sendRaw({ type: "bridge-disconnect" });
   }
 });
 

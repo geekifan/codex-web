@@ -5,7 +5,3 @@ src/server/**/*.d.ts
 src/server/**/*.d.ts.map
 src/server/**/*.js
 src/server/**/*.js.map
-src/shared/**/*.d.ts
-src/shared/**/*.d.ts.map
-src/shared/**/*.js
-src/shared/**/*.js.map

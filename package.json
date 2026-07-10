@@ -5,7 +5,6 @@
     "README.md",
     "scratch/asar/**/*",
     "src/server/**/*.js",
-    "src/shared/**/*.js",
     "src/server/electron/index.js",
     "!**/*.ts"
   ],
@@ -22,7 +21,6 @@
     "preserver": "npm run build:server && npm run build:browser",
     "server": "CODEX_CLI_PATH=$(which codex) node src/server/main.js",
     "test:bridge": "npm run build:server && node --test ./scripts/test_reliable_bridge",
-    "test:workspace-files": "npm run build:server && node --test ./scripts/test_workspace_files",
     "test:terminal": "node ./scripts/test_terminal_pty"
   },
   "repository": "git@github.com:0xcaff/codex-web.git",

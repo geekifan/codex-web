@@ -14,17 +14,6 @@ import {
   parseReliableBridgeHello,
   ReliableBridgeSession,
 } from "./reliable-bridge";
-import {
-  BridgeFrameType,
-  decodeBridgeFrame,
-  encodeBridgeFrame,
-} from "../shared/bridge-protocol";
-import {
-  isWorkspaceFileRendererMessage,
-  type WorkspaceFileMainMessage,
-  type WorkspaceFileRendererMessage,
-} from "../shared/workspace-files";
-import { WorkspaceFileManager } from "./workspace-files";
 import { glob } from "glob";
 
 type ServerOptions = {
@@ -51,8 +40,7 @@ type RendererToMainMessage =
       requestId: string;
       directoryPath: string | null;
       directoriesOnly: boolean;
-    }
-  | WorkspaceFileRendererMessage;
+    };
 
 type MainToRendererMessage =
   | {
@@ -83,8 +71,7 @@ type MainToRendererMessage =
       requestId: string;
       ok: false;
       errorMessage: string;
-    }
-  | WorkspaceFileMainMessage;
+    };
 
 type WorkspaceDirectoryEntry = {
   name: string;
@@ -270,15 +257,7 @@ function ensureElectronLikeProcessContext(): void {
 function sendBridgeReset(socket: WebSocket, reason: string): void {
   if (socket.readyState === WebSocket.OPEN) {
     try {
-      socket.send(
-        encodeBridgeFrame({
-          type: BridgeFrameType.Control,
-          id: 0,
-          ack: 0,
-          payload: { type: "bridge-reset", reason },
-        }),
-        { binary: true },
-      );
+      socket.send(JSON.stringify({ type: "bridge-reset", reason }));
     } catch {
       socket.terminate();
       return;
@@ -296,7 +275,6 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
     string,
     ReliableBridgeSession<RendererToMainMessage, MainToRendererMessage>
   >();
-  const workspaceFileManagers = new Map<string, WorkspaceFileManager>();
 
   await app.register(fastifyMultipart, {
     limits: {
@@ -389,22 +367,11 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
       clearTimeout(handshakeTimeout);
     });
 
-    socket.once("message", (rawData, isBinary) => {
+    socket.once("message", (rawData) => {
       clearTimeout(handshakeTimeout);
       let value: unknown;
       try {
-        if (!isBinary) {
-          throw new Error("binary handshake required");
-        }
-        const frame = decodeBridgeFrame(rawDataToUint8Array(rawData));
-        if (
-          frame.type !== BridgeFrameType.Control ||
-          frame.id !== 0 ||
-          frame.ack !== 0
-        ) {
-          throw new Error("invalid handshake frame");
-        }
-        value = frame.payload;
+        value = JSON.parse(String(rawData));
       } catch {
         sendBridgeReset(socket, "invalid reliable bridge handshake");
         return;
@@ -428,17 +395,11 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
           return;
         }
 
-        const manager = new WorkspaceFileManager((message, wait) =>
-          wait ? session!.sendAndWait(message) : session!.send(message),
-        );
-        workspaceFileManagers.set(hello.connectionId, manager);
         session = new ReliableBridgeSession({
           connectionId: hello.connectionId,
           serverEpoch,
           onDispose: () => {
             sessions.delete(hello.connectionId);
-            workspaceFileManagers.delete(hello.connectionId);
-            void manager.dispose();
           },
           onMessage: (message) => {
             handleRendererMessage(session!, message);
@@ -458,10 +419,6 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
     >,
     message: RendererToMainMessage,
   ): void {
-    if (isWorkspaceFileRendererMessage(message)) {
-      workspaceFileManagers.get(session.connectionId)?.handle(message);
-      return;
-    }
     if (message.type === "ipc-renderer-send") {
       bridgeState.handleRendererSend?.(message.channel, message.args);
       return;
@@ -537,26 +494,6 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
 
   const module = require(matches[0]!);
   module.runMainAppStartup();
-}
-
-function rawDataToUint8Array(rawData: import("ws").RawData): Uint8Array {
-  if (Array.isArray(rawData)) {
-    const length = rawData.reduce(
-      (total, chunk) => total + chunk.byteLength,
-      0,
-    );
-    const result = new Uint8Array(length);
-    let offset = 0;
-    for (const chunk of rawData) {
-      result.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return result;
-  }
-  if (rawData instanceof ArrayBuffer) {
-    return new Uint8Array(rawData);
-  }
-  return new Uint8Array(rawData.buffer, rawData.byteOffset, rawData.byteLength);
 }
 
 async function main(args: string[]) {
