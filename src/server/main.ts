@@ -15,6 +15,12 @@ import {
   ReliableBridgeSession,
 } from "./reliable-bridge";
 import { glob } from "glob";
+import { invokeIpcMainHandlerForServer } from "./electron";
+import {
+  createProjectWritableRootsService,
+  type ProjectWritableRoots,
+  type ProjectWritableRootsResult,
+} from "./project-writable-roots";
 
 type ServerOptions = {
   host: string;
@@ -40,6 +46,14 @@ type RendererToMainMessage =
       requestId: string;
       directoryPath: string | null;
       directoriesOnly: boolean;
+    }
+  | {
+      type: "project-writable-roots-request";
+      requestId: string;
+      operation: "addRoot" | "clearRoots" | "removeRoot";
+      legacyRoot: string | null;
+      projectId: string;
+      root?: string;
     };
 
 type MainToRendererMessage =
@@ -68,6 +82,18 @@ type MainToRendererMessage =
     }
   | {
       type: "workspace-directory-entries-result";
+      requestId: string;
+      ok: false;
+      errorMessage: string;
+    }
+  | {
+      type: "project-writable-roots-result";
+      requestId: string;
+      ok: true;
+      result: ProjectWritableRootsResult;
+    }
+  | {
+      type: "project-writable-roots-result";
       requestId: string;
       ok: false;
       errorMessage: string;
@@ -188,6 +214,143 @@ function errorMessage(error: unknown): string {
   return String(error);
 }
 
+const CODEX_MESSAGE_FROM_VIEW = "codex_desktop:message-from-view";
+const CODEX_MESSAGE_FOR_VIEW = "codex_desktop:message-for-view";
+const PROJECT_WRITABLE_ROOTS_KEY = "project-writable-roots";
+
+type CodexFetchResponse = {
+  type: "fetch-response";
+  requestId: string;
+  responseType: "error" | "success";
+  status: number;
+  bodyJsonString?: string;
+  error?: string;
+};
+
+function isCodexFetchResponse(value: unknown): value is CodexFetchResponse {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === "fetch-response" &&
+    "requestId" in value &&
+    typeof value.requestId === "string" &&
+    "responseType" in value &&
+    (value.responseType === "success" || value.responseType === "error") &&
+    "status" in value &&
+    typeof value.status === "number"
+  );
+}
+
+function projectWritableRootsValue(value: unknown): ProjectWritableRoots {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return {};
+  }
+  const roots: ProjectWritableRoots = {};
+  for (const [projectId, entries] of Object.entries(value)) {
+    if (!Array.isArray(entries)) {
+      continue;
+    }
+    const validEntries = entries.flatMap((entry) =>
+      typeof entry === "object" &&
+      entry !== null &&
+      "kind" in entry &&
+      entry.kind === "local" &&
+      "path" in entry &&
+      typeof entry.path === "string"
+        ? [{ kind: "local" as const, path: entry.path }]
+        : [],
+    );
+    roots[projectId] = validEntries;
+  }
+  return roots;
+}
+
+async function postCodexRequest<T>(
+  pathName: string,
+  params: unknown,
+): Promise<T> {
+  const requestId = randomUUID();
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error(`Timed out waiting for Codex request: ${pathName}`));
+    }, 30_000);
+    timeout.unref?.();
+
+    function finish(callback: () => void): void {
+      clearTimeout(timeout);
+      callback();
+    }
+
+    void invokeIpcMainHandlerForServer(
+      CODEX_MESSAGE_FROM_VIEW,
+      [
+        {
+          body: JSON.stringify(params),
+          method: "POST",
+          requestId,
+          type: "fetch",
+          url: `vscode://codex/${pathName}`,
+        },
+      ],
+      (channel, args) => {
+        if (channel !== CODEX_MESSAGE_FOR_VIEW) {
+          return;
+        }
+        const response = args[0];
+        if (
+          !isCodexFetchResponse(response) ||
+          response.requestId !== requestId
+        ) {
+          return;
+        }
+        if (
+          response.responseType !== "success" ||
+          response.status < 200 ||
+          response.status >= 300
+        ) {
+          finish(() =>
+            reject(
+              new Error(
+                response.error ??
+                  `Codex request failed with status ${response.status}`,
+              ),
+            ),
+          );
+          return;
+        }
+        try {
+          finish(() =>
+            resolve(JSON.parse(response.bodyJsonString ?? "null") as T),
+          );
+        } catch (error) {
+          finish(() => reject(error));
+        }
+      },
+    ).catch((error) => finish(() => reject(error)));
+  });
+}
+
+async function getProjectWritableRoots(): Promise<ProjectWritableRoots> {
+  const response = await postCodexRequest<{ value?: unknown }>(
+    "get-global-state",
+    { key: PROJECT_WRITABLE_ROOTS_KEY },
+  );
+  return projectWritableRootsValue(response.value);
+}
+
+async function setProjectWritableRoots(
+  value: ProjectWritableRoots,
+): Promise<void> {
+  const response = await postCodexRequest<{ success?: unknown }>(
+    "set-global-state",
+    { key: PROJECT_WRITABLE_ROOTS_KEY, value },
+  );
+  if (response.success !== true) {
+    throw new Error("Failed to set project writable roots");
+  }
+}
+
 async function getWorkspaceDirectoryEntries({
   directoryPath,
   directoriesOnly,
@@ -275,6 +438,22 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
     string,
     ReliableBridgeSession<RendererToMainMessage, MainToRendererMessage>
   >();
+  const projectWritableRoots = createProjectWritableRootsService({
+    getValue: getProjectWritableRoots,
+    notifyChanged: () => {
+      bridgeState.broadcastToRenderer?.({
+        type: "ipc-main-event",
+        channel: CODEX_MESSAGE_FOR_VIEW,
+        args: [
+          {
+            type: "global-state-updated",
+            keys: [PROJECT_WRITABLE_ROOTS_KEY],
+          },
+        ],
+      });
+    },
+    setValue: setProjectWritableRoots,
+  });
 
   await app.register(fastifyMultipart, {
     limits: {
@@ -438,6 +617,44 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
         .catch((error) => {
           session.send({
             type: "workspace-directory-entries-result",
+            requestId,
+            ok: false,
+            errorMessage: errorMessage(error),
+          });
+        });
+      return;
+    }
+
+    if (message.type === "project-writable-roots-request") {
+      const { requestId } = message;
+      const request = {
+        legacyRoot: message.legacyRoot,
+        projectId: message.projectId,
+        root: message.root,
+      };
+      const operation =
+        message.operation === "addRoot"
+          ? projectWritableRoots.addRoot(request)
+          : message.operation === "clearRoots"
+            ? projectWritableRoots.clearRoots(request)
+            : message.root === undefined
+              ? Promise.reject(new Error("Project writable root is required"))
+              : projectWritableRoots.removeRoot({
+                  ...request,
+                  root: message.root,
+                });
+      operation
+        .then((result) => {
+          session.send({
+            type: "project-writable-roots-result",
+            requestId,
+            ok: true,
+            result,
+          });
+        })
+        .catch((error) => {
+          session.send({
+            type: "project-writable-roots-result",
             requestId,
             ok: false,
             errorMessage: errorMessage(error),

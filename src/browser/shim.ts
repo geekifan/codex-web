@@ -30,6 +30,14 @@ type RendererToMainMessage =
       requestId: string;
       directoryPath: string | null;
       directoriesOnly: boolean;
+    }
+  | {
+      type: "project-writable-roots-request";
+      requestId: string;
+      operation: "addRoot" | "clearRoots" | "removeRoot";
+      legacyRoot: string | null;
+      projectId: string;
+      root?: string;
     };
 
 type MainToRendererMessage =
@@ -61,7 +69,47 @@ type MainToRendererMessage =
       requestId: string;
       ok: false;
       errorMessage: string;
+    }
+  | {
+      type: "project-writable-roots-result";
+      requestId: string;
+      ok: true;
+      result: ProjectWritableRootsResult;
+    }
+  | {
+      type: "project-writable-roots-result";
+      requestId: string;
+      ok: false;
+      errorMessage: string;
     };
+
+type WritableRoot = {
+  kind: "local";
+  path: string;
+};
+
+type ProjectWritableRootsResult = {
+  changed: boolean;
+  projectId: string;
+  roots: WritableRoot[];
+};
+
+type AddRootRequest = {
+  legacyRoot: string | null;
+  projectId: string;
+  root?: string;
+};
+
+type RemoveRootRequest = {
+  legacyRoot: string | null;
+  projectId: string;
+  root: string;
+};
+
+type ClearRootsRequest = {
+  legacyRoot: string | null;
+  projectId: string;
+};
 
 type BridgeServerFrame =
   | {
@@ -120,6 +168,17 @@ type ElectronShimState = {
   initialSidebarState?: boolean;
   closeSidebar?: () => void;
   services?: {
+    projectWritableRoots?: {
+      addRoot?: (
+        request: AddRootRequest,
+      ) => Promise<ProjectWritableRootsResult>;
+      clearRoots?: (
+        request: ClearRootsRequest,
+      ) => Promise<ProjectWritableRootsResult>;
+      removeRoot?: (
+        request: RemoveRootRequest,
+      ) => Promise<ProjectWritableRootsResult>;
+    };
     requestUserInputAutoResolution?: {
       recordConversationActivity?: (args: {
         conversationId: string;
@@ -208,6 +267,13 @@ const pendingDirectoryEntries = new Map<
     resolve: (value: WorkspaceDirectoryEntries) => void;
   }
 >();
+const pendingProjectWritableRoots = new Map<
+  string,
+  {
+    reject: (reason?: unknown) => void;
+    resolve: (result: ProjectWritableRootsResult) => void;
+  }
+>();
 const rendererListeners = new Map<string, Set<IpcListener>>();
 
 function unimplemented(method: string): never {
@@ -252,6 +318,20 @@ function handleIncomingMessage(message: MainToRendererMessage): void {
       return;
     }
     pendingDirectoryEntries.delete(message.requestId);
+    if (message.ok) {
+      pending.resolve(message.result);
+      return;
+    }
+    pending.reject(new Error(message.errorMessage));
+    return;
+  }
+
+  if (message.type === "project-writable-roots-result") {
+    const pending = pendingProjectWritableRoots.get(message.requestId);
+    if (!pending) {
+      return;
+    }
+    pendingProjectWritableRoots.delete(message.requestId);
     if (message.ok) {
       pending.resolve(message.result);
       return;
@@ -600,6 +680,22 @@ function requestWorkspaceDirectoryEntries(
   });
 }
 
+function requestProjectWritableRoots(
+  operation: "addRoot" | "clearRoots" | "removeRoot",
+  request: AddRootRequest | ClearRootsRequest | RemoveRootRequest,
+): Promise<ProjectWritableRootsResult> {
+  const requestId = nextRequestId();
+  return new Promise((resolve, reject) => {
+    pendingProjectWritableRoots.set(requestId, { resolve, reject });
+    enqueueMessage({
+      type: "project-writable-roots-request",
+      requestId,
+      operation,
+      ...request,
+    });
+  });
+}
+
 const themeMediaQuery = matchMedia("(prefers-color-scheme: dark)");
 const mobileMediaQuery = matchMedia("(max-width: 768px)");
 const initialSidebarState = !mobileMediaQuery.matches;
@@ -617,6 +713,23 @@ Object.assign(globalThis, {
 
 electronShim.services = {
   ...electronShim.services,
+  projectWritableRoots: {
+    ...electronShim.services?.projectWritableRoots,
+    addRoot: async (request) => {
+      if (request.root !== undefined) {
+        return requestProjectWritableRoots("addRoot", request);
+      }
+      const root = await openSelectWorkspaceRootDialog({
+        listDirectory: requestWorkspaceDirectoryEntries,
+      });
+      return requestProjectWritableRoots("addRoot", {
+        ...request,
+        ...(root === null ? {} : { root }),
+      });
+    },
+    clearRoots: (request) => requestProjectWritableRoots("clearRoots", request),
+    removeRoot: (request) => requestProjectWritableRoots("removeRoot", request),
+  },
   requestUserInputAutoResolution: {
     ...electronShim.services?.requestUserInputAutoResolution,
     recordConversationActivity: () => undefined,

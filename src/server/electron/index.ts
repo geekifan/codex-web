@@ -40,6 +40,11 @@ type IpcMainBridgeState = {
     args: unknown[],
     sourceUrl?: string,
   ) => void;
+  invokeHandlerForServer?: (
+    channel: string,
+    args: unknown[],
+    onSend: (channel: string, args: unknown[]) => void,
+  ) => Promise<unknown>;
 };
 
 function getIpcMainBridgeState(): IpcMainBridgeState {
@@ -176,20 +181,30 @@ const rendererWebContents: StubWebContents = {
   },
 };
 
-function createIpcMainEvent(): IpcMainEvent {
+function createIpcMainEvent(
+  onSend?: (channel: string, args: unknown[]) => void,
+): IpcMainEvent {
+  const send = (channel: string, ...args: unknown[]): void => {
+    if (onSend) {
+      onSend(channel, args);
+      return;
+    }
+    getIpcMainBridgeState().broadcastToRenderer?.({
+      type: "ipc-main-event",
+      channel,
+      args,
+    });
+  };
+  const sender = onSend
+    ? { ...rendererWebContents, send }
+    : rendererWebContents;
   const event: IpcMainEvent = {
     returnValue: undefined,
     processId: 1,
     frameId: 1,
-    sender: rendererWebContents,
+    sender,
     senderFrame: rendererMainFrame,
-    reply: (channel: string, ...args: unknown[]): void => {
-      getIpcMainBridgeState().broadcastToRenderer?.({
-        type: "ipc-main-event",
-        channel,
-        args,
-      });
-    },
+    reply: send,
   };
 
   return event;
@@ -232,6 +247,18 @@ function createIpcMainStub(): {
     emitter.emit(channel, event, ...args);
   };
 
+  bridgeState.invokeHandlerForServer = async (
+    channel: string,
+    args: unknown[],
+    onSend: (channel: string, args: unknown[]) => void,
+  ): Promise<unknown> => {
+    const handler = handlers.get(channel);
+    if (!handler) {
+      throw new Error(`[electron-main-stub] No ipcMain.handle for ${channel}`);
+    }
+    return await Promise.resolve(handler(createIpcMainEvent(onSend), ...args));
+  };
+
   return {
     on: emitter.on,
     off: emitter.off,
@@ -247,6 +274,18 @@ function createIpcMainStub(): {
       handlers.delete(channel);
     },
   };
+}
+
+export async function invokeIpcMainHandlerForServer(
+  channel: string,
+  args: unknown[],
+  onSend: (channel: string, args: unknown[]) => void,
+): Promise<unknown> {
+  const invokeHandler = getIpcMainBridgeState().invokeHandlerForServer;
+  if (!invokeHandler) {
+    throw new Error(`[electron-main-stub] No ipcMain.handle for ${channel}`);
+  }
+  return invokeHandler(channel, args, onSend);
 }
 
 let appReady = false;

@@ -1,0 +1,158 @@
+#!/usr/bin/env node
+
+const assert = require("node:assert/strict");
+const test = require("node:test");
+
+const {
+  createProjectWritableRootsService,
+} = require("../src/server/project-writable-roots.js");
+const {
+  ipcMain,
+  invokeIpcMainHandlerForServer,
+} = require("../src/server/electron/index.js");
+
+function createService(initialValue = {}, getRootCompareKeys) {
+  let value = initialValue;
+  let notifications = 0;
+  const service = createProjectWritableRootsService({
+    getValue: async () => value,
+    getRootCompareKeys,
+    notifyChanged: () => {
+      notifications += 1;
+    },
+    setValue: async (nextValue) => {
+      value = nextValue;
+    },
+  });
+  return {
+    get notifications() {
+      return notifications;
+    },
+    get value() {
+      return value;
+    },
+    service,
+  };
+}
+
+test("addRoot stores a root once when resolved paths overlap", async () => {
+  const fixture = createService({}, async (root) =>
+    root === "/workspace-link" ? ["/workspace-link", "/workspace"] : [root],
+  );
+
+  const first = await fixture.service.addRoot({
+    legacyRoot: null,
+    projectId: "project-1",
+    root: "/workspace",
+  });
+  const duplicate = await fixture.service.addRoot({
+    legacyRoot: null,
+    projectId: "project-1",
+    root: "/workspace-link",
+  });
+
+  assert.deepEqual(first, {
+    changed: true,
+    projectId: "project-1",
+    roots: [{ kind: "local", path: "/workspace" }],
+  });
+  assert.deepEqual(duplicate, {
+    changed: false,
+    projectId: "project-1",
+    roots: [{ kind: "local", path: "/workspace" }],
+  });
+  assert.equal(fixture.notifications, 1);
+});
+
+test("clearRoots replaces a legacy fallback with an explicit empty root list", async () => {
+  const fixture = createService();
+
+  const cleared = await fixture.service.clearRoots({
+    legacyRoot: "/legacy-project",
+    projectId: "project-1",
+  });
+  const repeated = await fixture.service.clearRoots({
+    legacyRoot: "/legacy-project",
+    projectId: "project-1",
+  });
+
+  assert.deepEqual(cleared, {
+    changed: true,
+    projectId: "project-1",
+    roots: [],
+  });
+  assert.deepEqual(fixture.value, { "project-1": [] });
+  assert.deepEqual(repeated, {
+    changed: false,
+    projectId: "project-1",
+    roots: [],
+  });
+  assert.equal(fixture.notifications, 1);
+});
+
+test("removeRoot removes every root with overlapping comparison keys", async () => {
+  const fixture = createService(
+    {
+      "project-1": [
+        { kind: "local", path: "/workspace" },
+        { kind: "local", path: "/other" },
+      ],
+    },
+    async (root) =>
+      root === "/workspace-link" ? ["/workspace-link", "/workspace"] : [root],
+  );
+
+  const result = await fixture.service.removeRoot({
+    legacyRoot: null,
+    projectId: "project-1",
+    root: "/workspace-link",
+  });
+
+  assert.deepEqual(result, {
+    changed: true,
+    projectId: "project-1",
+    roots: [{ kind: "local", path: "/other" }],
+  });
+  assert.deepEqual(fixture.value, {
+    "project-1": [{ kind: "local", path: "/other" }],
+  });
+});
+
+test("mutations are serialized", async () => {
+  const fixture = createService({}, async (root) => [root]);
+
+  await Promise.all([
+    fixture.service.addRoot({
+      legacyRoot: null,
+      projectId: "project-1",
+      root: "/first",
+    }),
+    fixture.service.addRoot({
+      legacyRoot: null,
+      projectId: "project-1",
+      root: "/second",
+    }),
+  ]);
+
+  assert.deepEqual(fixture.value, {
+    "project-1": [
+      { kind: "local", path: "/first" },
+      { kind: "local", path: "/second" },
+    ],
+  });
+});
+
+test("server-side app-host requests receive renderer replies", async () => {
+  ipcMain.handle("test:project-writable-roots", (event) => {
+    event.sender.send("test:reply", { ok: true });
+  });
+  const messages = [];
+
+  await invokeIpcMainHandlerForServer(
+    "test:project-writable-roots",
+    [],
+    (channel, args) => messages.push({ channel, args }),
+  );
+
+  assert.deepEqual(messages, [{ channel: "test:reply", args: [{ ok: true }] }]);
+});
