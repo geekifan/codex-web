@@ -1,6 +1,6 @@
 --- a/webview/assets/app-initial~app-main~hotkey-window-thread-page~thread-app-shell-chrome~header~remote-conver~h59fr3q5-Cm3GYhJA.js
 +++ b/webview/assets/app-initial~app-main~hotkey-window-thread-page~thread-app-shell-chrome~header~remote-conver~h59fr3q5-Cm3GYhJA.js
-@@ -47078,7 +47078,16 @@
+@@ -47078,7 +47078,17 @@
            (super(), (this.#e = e));
          }
        }),
@@ -9,6 +9,7 @@
 +        appActions: lz,
 +        appUpdates: PNe,
 +        downloads: WNe,
++        workspaceFiles: {},
 +        requestUserInputAutoResolution: {
 +          recordConversationActivity: () => undefined,
 +          setConversationPresented: () => undefined,
