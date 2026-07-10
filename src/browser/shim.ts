@@ -314,6 +314,7 @@ const pendingThreadProjectAssignments = new Map<
   }
 >();
 const rendererListeners = new Map<string, Set<IpcListener>>();
+const reportedRendererListenerErrors = new Set<string>();
 
 function unimplemented(method: string): never {
   debugger;
@@ -327,7 +328,14 @@ export function emitRendererEvent(channel: string, args: unknown[]): void {
   }
   const event = { sender: null };
   for (const listener of listeners) {
-    listener(event, ...args);
+    try {
+      listener(event, ...args);
+    } catch (error) {
+      if (!reportedRendererListenerErrors.has(channel)) {
+        reportedRendererListenerErrors.add(channel);
+        console.error(`[electron-stub] IPC listener failed for ${channel}`, error);
+      }
+    }
   }
 }
 

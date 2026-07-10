@@ -57,9 +57,7 @@ function getIpcMainBridgeState(): IpcMainBridgeState {
   return globals.__codexElectronIpcBridge;
 }
 
-function log(method: string, args: unknown[]): void {
-  console.log(`[electron-main-stub] ${method}`, args);
-}
+function log(_method: string, _args: unknown[]): void {}
 
 function createDeepStub(pathLabel: string): StubFunction {
   const fn: StubFunction = (...args: unknown[]) => {
