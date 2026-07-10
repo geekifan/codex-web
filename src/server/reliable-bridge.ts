@@ -1,6 +1,16 @@
 import { WebSocket, type RawData } from "ws";
+import {
+  BRIDGE_HEADER_LENGTH,
+  BRIDGE_PROTOCOL_VERSION,
+  BridgeFrameType,
+  decodeBridgeFrame,
+  encodeBridgeFrame,
+  encodeBridgeFramePayload,
+  encodeBridgeValue,
+  type BridgeFrameTypeValue,
+} from "../shared/bridge-protocol";
 
-export const RELIABLE_BRIDGE_PROTOCOL_VERSION = 2;
+export const RELIABLE_BRIDGE_PROTOCOL_VERSION = BRIDGE_PROTOCOL_VERSION;
 
 const DEFAULT_GRACE_TIME_MS = 5 * 60 * 1_000;
 const DEFAULT_MAX_UNACKED_BYTES = 64 * 1024 * 1_024;
@@ -15,32 +25,12 @@ export type ReliableBridgeHello = {
   serverEpoch: string | null;
 };
 
-type ReliableBridgeClientFrame<T> =
-  | {
-      type: "bridge-data";
-      id: number;
-      ack: number;
-      message: T;
-    }
-  | {
-      type: "bridge-ack";
-      ack: number;
-    }
-  | {
-      type: "bridge-replay-request";
-      ack: number;
-    }
-  | {
-      type: "bridge-keepalive";
-    }
-  | {
-      type: "bridge-disconnect";
-    };
-
-type OutgoingMessage<T> = {
+type OutgoingMessage = {
   id: number;
-  message: T;
+  payload: Uint8Array;
   byteLength: number;
+  resolve?: () => void;
+  reject?: (error: Error) => void;
 };
 
 type ReliableBridgeSessionOptions<TIncoming> = {
@@ -67,7 +57,7 @@ export class ReliableBridgeSession<TIncoming, TOutgoing> {
   private outgoingAckId = 0;
   private outgoingSentId = 0;
   private outgoingUnackedBytes = 0;
-  private outgoingUnacked: OutgoingMessage<TOutgoing>[] = [];
+  private outgoingUnacked: OutgoingMessage[] = [];
   private incomingMessageId = 0;
   private disposed = false;
   private graceTimer: NodeJS.Timeout | null = null;
@@ -99,7 +89,7 @@ export class ReliableBridgeSession<TIncoming, TOutgoing> {
     socket.on("close", this.handleSocketClose);
     socket.on("error", this.handleSocketError);
 
-    this.write({
+    this.writeControl({
       type: "bridge-ready",
       connectionId: this.connectionId,
       serverEpoch: this.serverEpoch,
@@ -111,25 +101,16 @@ export class ReliableBridgeSession<TIncoming, TOutgoing> {
   }
 
   send(message: TOutgoing): void {
+    this.enqueue(message);
+  }
+
+  sendAndWait(message: TOutgoing): Promise<void> {
     if (this.disposed) {
-      return;
+      return Promise.reject(new Error("reliable bridge session disposed"));
     }
-
-    const byteLength = Buffer.byteLength(JSON.stringify(message));
-    const outgoing = {
-      id: ++this.outgoingMessageId,
-      message,
-      byteLength,
-    };
-    this.outgoingUnacked.push(outgoing);
-    this.outgoingUnackedBytes += byteLength;
-
-    if (this.outgoingUnackedBytes > this.maxUnackedBytes) {
-      this.reset("reliable bridge buffer exceeded");
-      return;
-    }
-
-    this.pumpOutgoing();
+    return new Promise<void>((resolve, reject) => {
+      this.enqueue(message, resolve, reject);
+    });
   }
 
   dispose(reason: string): void {
@@ -143,54 +124,91 @@ export class ReliableBridgeSession<TIncoming, TOutgoing> {
     this.socket = null;
     this.removeSocketListeners(socket);
     socket?.close(1000, reason);
+    const error = new Error(reason);
+    for (const message of this.outgoingUnacked) {
+      message.reject?.(error);
+    }
     this.outgoingUnacked = [];
     this.outgoingUnackedBytes = 0;
     this.onDispose(reason);
   }
 
-  private readonly handleSocketMessage = (rawData: RawData): void => {
-    this.lastIncomingAt = Date.now();
-    let frame: ReliableBridgeClientFrame<TIncoming>;
+  private enqueue(
+    message: TOutgoing,
+    resolve?: () => void,
+    reject?: (error: Error) => void,
+  ): void {
+    if (this.disposed) {
+      reject?.(new Error("reliable bridge session disposed"));
+      return;
+    }
+    let payload: Uint8Array;
     try {
-      frame = JSON.parse(
-        String(rawData),
-      ) as ReliableBridgeClientFrame<TIncoming>;
+      payload = encodeBridgeValue(message);
+    } catch (error) {
+      reject?.(error instanceof Error ? error : new Error(String(error)));
+      if (!reject) {
+        this.reset("failed to encode reliable bridge message");
+      }
+      return;
+    }
+    const outgoing = {
+      id: ++this.outgoingMessageId,
+      payload,
+      byteLength: BRIDGE_HEADER_LENGTH + payload.byteLength,
+      ...(resolve ? { resolve } : {}),
+      ...(reject ? { reject } : {}),
+    };
+    this.outgoingUnacked.push(outgoing);
+    this.outgoingUnackedBytes += outgoing.byteLength;
+
+    if (this.outgoingUnackedBytes > this.maxUnackedBytes) {
+      this.reset("reliable bridge buffer exceeded");
+      return;
+    }
+    this.pumpOutgoing();
+  }
+
+  private readonly handleSocketMessage = (
+    rawData: RawData,
+    isBinary: boolean,
+  ): void => {
+    this.lastIncomingAt = Date.now();
+    if (!isBinary) {
+      this.reset("reliable bridge requires binary frames");
+      return;
+    }
+    let frame;
+    try {
+      frame = decodeBridgeFrame(toUint8Array(rawData));
     } catch {
       this.reset("invalid reliable bridge frame");
       return;
     }
-    if (!frame || typeof frame !== "object" || !("type" in frame)) {
-      this.reset("invalid reliable bridge frame");
-      return;
-    }
 
-    if (frame.type === "bridge-data") {
+    if (frame.type === BridgeFrameType.Regular) {
       if (!this.acceptAck(frame.ack)) {
         return;
       }
-      this.acceptMessage(frame);
+      this.acceptMessage(frame.id, frame.payload);
       return;
     }
-
-    if (frame.type === "bridge-ack") {
+    if (frame.type === BridgeFrameType.Ack) {
       this.acceptAck(frame.ack);
       return;
     }
-
-    if (frame.type === "bridge-replay-request") {
+    if (frame.type === BridgeFrameType.ReplayRequest) {
       if (this.acceptAck(frame.ack, false)) {
         this.outgoingSentId = frame.ack;
         this.pumpOutgoing();
       }
       return;
     }
-
-    if (frame.type === "bridge-disconnect") {
+    if (frame.type === BridgeFrameType.Disconnect) {
       this.dispose("client disconnected");
       return;
     }
-
-    if (frame.type !== "bridge-keepalive") {
+    if (frame.type !== BridgeFrameType.KeepAlive) {
       this.reset("unsupported reliable bridge frame");
     }
   };
@@ -213,21 +231,15 @@ export class ReliableBridgeSession<TIncoming, TOutgoing> {
     this.socket?.terminate();
   };
 
-  private acceptMessage(
-    frame: Extract<
-      ReliableBridgeClientFrame<TIncoming>,
-      { type: "bridge-data" }
-    >,
-  ): void {
-    if (!Number.isSafeInteger(frame.id) || frame.id <= 0) {
-      this.reset("invalid reliable bridge message id");
+  private acceptMessage(id: number, message: unknown): void {
+    if (!Number.isSafeInteger(id) || id <= 0 || message === undefined) {
+      this.reset("invalid reliable bridge message");
       return;
     }
-
-    if (frame.id === this.incomingMessageId + 1) {
-      this.incomingMessageId = frame.id;
+    if (id === this.incomingMessageId + 1) {
+      this.incomingMessageId = id;
       try {
-        this.onMessage(frame.message);
+        this.onMessage(message as TIncoming);
       } catch {
         this.reset("reliable bridge message handler failed");
         return;
@@ -235,16 +247,11 @@ export class ReliableBridgeSession<TIncoming, TOutgoing> {
       this.writeAck();
       return;
     }
-
-    if (frame.id <= this.incomingMessageId) {
+    if (id <= this.incomingMessageId) {
       this.writeAck();
       return;
     }
-
-    this.write({
-      type: "bridge-replay-request",
-      ack: this.incomingMessageId,
-    });
+    this.writeFrame(BridgeFrameType.ReplayRequest, 0, this.incomingMessageId);
   }
 
   private acceptAck(ack: number, pump = true): boolean {
@@ -267,6 +274,9 @@ export class ReliableBridgeSession<TIncoming, TOutgoing> {
     this.outgoingUnacked = this.outgoingUnacked.filter(
       (message) => message.id > ack,
     );
+    for (const message of acknowledged) {
+      message.resolve?.();
+    }
     if (pump) {
       this.pumpOutgoing();
     }
@@ -291,41 +301,57 @@ export class ReliableBridgeSession<TIncoming, TOutgoing> {
       ) {
         break;
       }
-      this.writeData(message);
+      this.writeEncodedData(message);
       this.outgoingSentId = message.id;
       inFlightBytes += message.byteLength;
     }
   }
 
-  private writeData(message: OutgoingMessage<TOutgoing>): void {
-    this.write({
-      type: "bridge-data",
-      id: message.id,
-      ack: this.incomingMessageId,
-      message: message.message,
-    });
+  private writeEncodedData(message: OutgoingMessage): void {
+    this.writeFrame(
+      BridgeFrameType.Regular,
+      message.id,
+      this.incomingMessageId,
+      message.payload,
+      true,
+    );
+  }
+
+  private writeControl(payload: unknown): void {
+    this.writeFrame(
+      BridgeFrameType.Control,
+      0,
+      this.incomingMessageId,
+      payload,
+    );
   }
 
   private writeAck(): void {
-    this.write({
-      type: "bridge-ack",
-      ack: this.incomingMessageId,
-    });
+    this.writeFrame(BridgeFrameType.Ack, 0, this.incomingMessageId);
   }
 
-  private write(frame: object): void {
+  private writeFrame(
+    type: BridgeFrameTypeValue,
+    id: number,
+    ack: number,
+    payload?: unknown,
+    encoded = false,
+  ): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       return;
     }
     try {
-      this.socket.send(JSON.stringify(frame));
+      const frame = encoded
+        ? encodeBridgeFramePayload(type, id, ack, payload as Uint8Array)
+        : encodeBridgeFrame({ type, id, ack, payload });
+      this.socket.send(frame, { binary: true });
     } catch {
       this.socket.terminate();
     }
   }
 
   private reset(reason: string): void {
-    this.write({ type: "bridge-reset", reason });
+    this.writeControl({ type: "bridge-reset", reason });
     this.dispose(reason);
   }
 
@@ -352,7 +378,7 @@ export class ReliableBridgeSession<TIncoming, TOutgoing> {
         this.socket?.terminate();
         return;
       }
-      this.write({ type: "bridge-keepalive" });
+      this.writeFrame(BridgeFrameType.KeepAlive, 0, this.incomingMessageId);
     }, KEEPALIVE_INTERVAL_MS);
     this.keepaliveTimer.unref?.();
   }
@@ -389,4 +415,24 @@ export function parseReliableBridgeHello(
     return null;
   }
   return hello as ReliableBridgeHello;
+}
+
+function toUint8Array(rawData: RawData): Uint8Array {
+  if (Array.isArray(rawData)) {
+    const length = rawData.reduce(
+      (total, chunk) => total + chunk.byteLength,
+      0,
+    );
+    const result = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of rawData) {
+      result.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return result;
+  }
+  if (rawData instanceof ArrayBuffer) {
+    return new Uint8Array(rawData);
+  }
+  return new Uint8Array(rawData.buffer, rawData.byteOffset, rawData.byteLength);
 }
