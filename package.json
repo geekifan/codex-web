@@ -15,7 +15,7 @@
     "launch:unpacked:server": "http-server ./scratch/asar/webview -a localhost -p 5175 -c-1",
     "launch:unpacked": "NODE_ENV=development electron ./scratch/asar --remote-debugging-port=9222",
     "dev:browser": "vite --config vite.browser.config.ts",
-    "build:browser": "vite build --config vite.browser.config.ts",
+    "build:browser": "cp assets/* scratch/asar/webview/ && vite build --config vite.browser.config.ts",
     "build:server": "cd src/server && tsc",
     "prepare:asar": "./scripts/prepare_asar",
     "preserver": "npm run build:server && npm run build:browser",

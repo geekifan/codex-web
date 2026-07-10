@@ -1,12 +1,50 @@
 --- a/webview/index.html
 +++ b/webview/index.html
-@@ -131,6 +131,11 @@
+@@ -131,6 +131,49 @@
          }
        }
      </style>
 +    <style>
 +      .main-surface {
 +        --spacing-token-safe-header-left: 0px;
++      }
++
++      @media (display-mode: window-controls-overlay) {
++        html,
++        body {
++          background-color: var(--color-token-main-surface-primary);
++        }
++
++        .main-surface {
++          --spacing-token-safe-header-left: inherit;
++        }
++
++        [data-app-shell-header-edge-scroll]
++          > [data-test-id="header-shell-slot"]:nth-child(2) {
++          margin-left: 0.5rem;
++        }
++
++        [data-app-shell-header-edge-scroll]
++          > [data-test-id="header-shell-slot"]:last-child {
++          /* Match Codra and VS Code by reserving the CSS WCO titlebar inset directly. */
++          margin-right: max(
++            16px,
++            calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 16px)
++          );
++        }
++
++        [class~="group/application-menu-top-bar"] {
++          padding-left: calc(
++            var(--spacing-token-safe-header-left) + 0.5rem
++          );
++          padding-right: calc(
++            var(--spacing-token-safe-header-right) + 0.5rem
++          );
++        }
++
++        .app-header-tint {
++          background-color: var(--color-token-main-surface-primary);
++        }
 +      }
 +    </style>
      <script type="module" crossorigin src="./assets/index-CSKm7Mu1.js"></script>

@@ -2,6 +2,8 @@
   "short_name": "Codex",
   "start_url": "/",
   "display": "standalone",
+  "display_override": ["window-controls-overlay"],
+  "theme_color": "#ffffff",
   "background_color": "#ffffff",
   "share_target": {
     "action": "/share/receive",
