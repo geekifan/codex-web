@@ -145,6 +145,10 @@ type ElectronShimState = {
   };
   onMemoryNavigationChanged?: (navigation: MemoryNavigationChange) => void;
   overrideAdapter?: {
+    getDynamicConfigOverride?: (
+      e: StatsigDynamicConfigEvaluation,
+      ...args: unknown[]
+    ) => StatsigDynamicConfigEvaluation | null;
     getGateOverride?: (
       e: StatsigGateEvaluation,
       ...args: unknown[]
@@ -155,6 +159,12 @@ type ElectronShimState = {
 type StatsigGateEvaluation = {
   name: string;
   value: boolean;
+  [key: string]: unknown;
+};
+
+type StatsigDynamicConfigEvaluation = {
+  name: string;
+  value: Record<string, unknown>;
   [key: string]: unknown;
 };
 
@@ -957,7 +967,28 @@ electronShim.services = {
 };
 
 electronShim.overrideAdapter = {
+  getDynamicConfigOverride(e) {
+    if (e.name !== "107580212") {
+      return null;
+    }
+
+    return {
+      ...e,
+      value: {
+        ...e.value,
+        use_hidden_models: false,
+      },
+    };
+  },
   getGateOverride(e) {
+    if (e.name === "3836321032") {
+      // Enable the Pierre workspace file editor in the web host.
+      return {
+        ...e,
+        value: true,
+      };
+    }
+
     if (e.name === "2929582856") {
       // codex_app_sunset
       return {
