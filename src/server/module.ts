@@ -10,6 +10,7 @@ export function installModuleAliasHook(): void {
     ) => unknown;
   };
   const originalLoad = moduleWithLoad._load;
+  const hostNodePtyPath = require.resolve("node-pty");
 
   moduleWithLoad._load = function moduleAliasLoad(
     request: string,
@@ -21,6 +22,10 @@ export function installModuleAliasHook(): void {
         path.resolve(__dirname, "../.."),
         "src/server/electron/index.js",
       ), parent, isMain);
+    }
+
+    if (request === "node-pty") {
+      return originalLoad.call(this, hostNodePtyPath, parent, isMain);
     }
 
     return originalLoad.call(this, request, parent, isMain);
