@@ -147,6 +147,10 @@ type ElectronShimState = {
       e: StatsigGateEvaluation,
       ...args: unknown[]
     ) => StatsigGateEvaluation | null;
+    getLayerOverride?: (
+      e: StatsigLayerEvaluation,
+      ...args: unknown[]
+    ) => StatsigLayerEvaluation | null;
   };
 };
 
@@ -159,6 +163,12 @@ type StatsigGateEvaluation = {
 type StatsigDynamicConfigEvaluation = {
   name: string;
   value: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+type StatsigLayerEvaluation = {
+  name: string;
+  __value: Record<string, unknown>;
   [key: string]: unknown;
 };
 
@@ -627,17 +637,6 @@ electronShim.overrideAdapter = {
       };
     }
 
-    if (e.name === "72216192") {
-      // Keep the language picker and the i18n provider enabled without a cached config.
-      return {
-        ...e,
-        value: {
-          ...e.value,
-          enable_i18n: true,
-        },
-      };
-    }
-
     return null;
   },
   getGateOverride(e) {
@@ -666,6 +665,19 @@ electronShim.overrideAdapter = {
     }
 
     return null;
+  },
+  getLayerOverride(e) {
+    if (e.name !== "72216192") {
+      return null;
+    }
+
+    return {
+      ...e,
+      __value: {
+        ...e.__value,
+        enable_i18n: true,
+      },
+    };
   },
 };
 
