@@ -617,17 +617,28 @@ electronShim.services = {
 
 electronShim.overrideAdapter = {
   getDynamicConfigOverride(e) {
-    if (e.name !== "107580212") {
-      return null;
+    if (e.name === "107580212") {
+      return {
+        ...e,
+        value: {
+          ...e.value,
+          use_hidden_models: false,
+        },
+      };
     }
 
-    return {
-      ...e,
-      value: {
-        ...e.value,
-        use_hidden_models: false,
-      },
-    };
+    if (e.name === "72216192") {
+      // Keep the language picker and the i18n provider enabled without a cached config.
+      return {
+        ...e,
+        value: {
+          ...e.value,
+          enable_i18n: true,
+        },
+      };
+    }
+
+    return null;
   },
   getGateOverride(e) {
     if (e.name === "3836321032") {
