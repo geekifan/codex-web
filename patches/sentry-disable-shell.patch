@@ -8,8 +8,8 @@
      dsn: sW,
      environment: e.buildFlavor,
      release: cW(n.version),
---- a/.vite/build/sqlite-Bd1pmlws.js
-+++ b/.vite/build/sqlite-Bd1pmlws.js
+--- a/.vite/build/sqlite-BqLffnB9.js
++++ b/.vite/build/sqlite-BqLffnB9.js
 @@ -42675,6 +42675,7 @@
      i = t.Yi(e.version);
    return (

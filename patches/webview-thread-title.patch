@@ -1,29 +1,29 @@
---- a/webview/assets/local-conversation-thread-D5wniwTZ.js
-+++ b/webview/assets/local-conversation-thread-D5wniwTZ.js
-@@ -226,6 +226,7 @@
-   eD as Lt,
-   eI as Rt,
-   ei as zt,
-+  fi as codexHostedWindowTitleAtom,
-   fA as Bt,
-   fr as Vt,
-   fu as Ht,
-@@ -15704,6 +15705,7 @@
-   let S = W(i),
-     C = G(Pt, e) ?? !0,
-     w = G(jn, e),
-+    codexHostedWindowTitle = G(codexHostedWindowTitleAtom, e),
-     T = n(`2138468235`).get(`enable_mcp_apps`, !1),
-     { data: E } = G(ut, l, { enabled: T && e != null }),
-     { visibleTurnEntries: D } = G(sc, {
-@@ -15803,6 +15805,10 @@
+--- a/webview/assets/local-conversation-thread-imfIBhy0.js
++++ b/webview/assets/local-conversation-thread-imfIBhy0.js
+@@ -233,6 +233,7 @@
+   X5 as Nn,
+   X6 as Pn,
+   XM as Fn,
++  XN as codexHostedWindowTitleAtom,
+   XP as In,
+   XS as Ln,
+   XY as Rn,
+@@ -15627,6 +15628,7 @@
+   let S = G(pr),
+     C = W(i, e) ?? !0,
+     w = W(ke, e),
++    codexHostedWindowTitle = W(codexHostedWindowTitleAtom, e),
+     T = m(`2138468235`).get(`enable_mcp_apps`, !1),
+     { data: E } = W(xe, c, { enabled: T && e != null }),
+     { visibleTurnEntries: D } = W(Pu, {
+@@ -15726,6 +15728,10 @@
    (0, sC.useEffect)(() => {
-     c && de();
-   }, [de, c]);
+     s && me();
+   }, [me, s]);
 +  (0, sC.useEffect)(() => {
 +    let t = codexHostedWindowTitle?.trim();
 +    t && (document.title = `${t} | Codex`);
 +  }, [codexHostedWindowTitle]);
-   let fe = q((e) => {
-       ((te.current = e), ee(e));
+   let he = q((e) => {
+       ((re.current = e), ne(e));
      }),

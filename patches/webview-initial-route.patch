@@ -1,40 +1,38 @@
---- a/webview/assets/app-initial~app-main~hotkey-window-thread-page~thread-app-shell-chrome~header~remote-conver~h59fr3q5-Cm3GYhJA.js
-+++ b/webview/assets/app-initial~app-main~hotkey-window-thread-page~thread-app-shell-chrome~header~remote-conver~h59fr3q5-Cm3GYhJA.js
-@@ -90247,11 +90247,16 @@
+--- a/webview/assets/app-initial~app-main~pull-request-code-review~onboarding-page~hotkey-window-thread-page~cha~b76hmflu-y0KJWbm3.js
++++ b/webview/assets/app-initial~app-main~pull-request-code-review~onboarding-page~hotkey-window-thread-page~cha~b76hmflu-y0KJWbm3.js
+@@ -140779,11 +140779,16 @@
    unstable_useTransitions: i,
  }) {
-   let a = z4.useRef();
--  a.current ??= Ctt({ initialEntries: n, initialIndex: r, v5Compat: !0 });
-+  a.current ??= Ctt({
+   let a = AM.useRef();
+-  a.current ??= gJt({ initialEntries: n, initialIndex: r, v5Compat: !0 });
++  a.current ??= gJt({
 +    initialEntries: n ?? [window.__ELECTRON_SHIM__.initialRoute],
 +    initialIndex: r,
 +    v5Compat: !0,
 +  });
    let o = a.current,
-     [s, c] = z4.useState({ action: o.action, location: o.location }),
-     l = z4.useCallback(
+     [s, c] = AM.useState({ action: o.action, location: o.location }),
+     l = AM.useCallback(
        (e) => {
 +        window.__ELECTRON_SHIM__.onMemoryNavigationChanged(e);
-         i === !1 ? c(e) : z4.startTransition(() => c(e));
+         i === !1 ? c(e) : AM.startTransition(() => c(e));
        },
        [i],
---- a/webview/assets/app-initial~app-main~hotkey-window-thread-page~thread-app-shell-chrome~remote-conversation-~gjotggjg--gGzOgo3.js
-+++ b/webview/assets/app-initial~app-main~hotkey-window-thread-page~thread-app-shell-chrome~remote-conversation-~gjotggjg--gGzOgo3.js
-@@ -467,7 +467,7 @@
-       Wt(),
-       (rn = `app-shell-bottom-panel-launcher-visible`),
-       (an = 100),
--      (on = g(H, !0)),
-+      (on = g(H, window.__ELECTRON_SHIM__.initialSidebarState)),
-       (sn = g(H, !0)),
-       (cn = g(H, !1)),
-       (ln = g(H, !1, {
-@@ -510,7 +510,7 @@
+@@ -162985,7 +162990,7 @@
+       spn(),
+       (_pn = `app-shell-bottom-panel-launcher-visible`),
+       (vpn = 100),
+-      (gR = ga(G, !0)),
++      (gR = ga(G, window.__ELECTRON_SHIM__.initialSidebarState)),
+       (ypn = ga(G, !0)),
+       (_R = ga(G, !1)),
+       (vR = ga(G, !1, {
+@@ -163028,7 +163033,7 @@
            };
          },
        })),
--      (dn = g(H, () => new R(1))),
-+      (dn = g(H, () => new R(window.__ELECTRON_SHIM__.initialSidebarState))),
-       (fn = g(H, zt)),
-       (pn = v(rn, !0)),
-       (mn = g(G, !1)),
+-      (xpn = ga(G, () => new vp(1))),
++      (xpn = ga(G, () => new vp(window.__ELECTRON_SHIM__.initialSidebarState))),
+       (Spn = ga(G, npn)),
+       (Cpn = K_(_pn, !0)),
+       (yR = ga(iM, !1)),

@@ -2,7 +2,7 @@
 +++ b/webview/index.html
 @@ -152,10 +152,6 @@
        crossorigin
-       href="./assets/app-initial~app-main~hotkey-window-thread-page~thread-app-shell-chrome~header~remote-conver~h59fr3q5-gcDk1du5.css"
+       href="./assets/app-initial~app-main~pull-request-code-review~onboarding-page~hotkey-window-thread-page~cha~b76hmflu-WPYLRJwA.css"
      />
 -    <meta
 -      http-equiv="Content-Security-Policy"

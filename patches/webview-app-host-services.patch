@@ -1,14 +1,14 @@
---- a/webview/assets/app-initial~app-main~hotkey-window-thread-page~thread-app-shell-chrome~header~remote-conver~h59fr3q5-Cm3GYhJA.js
-+++ b/webview/assets/app-initial~app-main~hotkey-window-thread-page~thread-app-shell-chrome~header~remote-conver~h59fr3q5-Cm3GYhJA.js
-@@ -47078,7 +47078,17 @@
+--- a/webview/assets/app-initial~app-main~pull-request-code-review~onboarding-page~hotkey-window-thread-page~cha~b76hmflu-y0KJWbm3.js
++++ b/webview/assets/app-initial~app-main~pull-request-code-review~onboarding-page~hotkey-window-thread-page~cha~b76hmflu-y0KJWbm3.js
+@@ -48433,7 +48433,17 @@
            (super(), (this.#e = e));
          }
        }),
--      (qNe = new KNe({ appActions: lz, appUpdates: PNe, downloads: WNe })));
-+      (qNe = new KNe({
-+        appActions: lz,
-+        appUpdates: PNe,
-+        downloads: WNe,
+-      (g0e = new h0e({ appActions: Z1e, appUpdates: t0e, downloads: p0e })));
++      (g0e = new h0e({
++        appActions: Z1e,
++        appUpdates: t0e,
++        downloads: p0e,
 +        workspaceFiles: {},
 +        requestUserInputAutoResolution: {
 +          recordConversationActivity: () => undefined,
@@ -17,16 +17,16 @@
 +        },
 +      })));
    });
- function YNe() {
+ function v0e() {
    let { port1: e, port2: t } = new MessageChannel();
-@@ -47092,6 +47101,10 @@
+@@ -48447,6 +48457,10 @@
    );
  }
- async function XNe() {
+ async function y0e() {
 +  if (window.__ELECTRON_SHIM__ != null) {
-+    ((vz = qNe), (yz = qNe.services), yz.devboxService);
++    ((by = g0e), (xy = g0e.services), xy.devboxService);
 +    return;
 +  }
-   ((vz = YNe()), (yz = await vz.services), yz.devboxService);
+   ((by = v0e()), (xy = await by.services), xy.devboxService);
  }
- var vz,
+ var by,

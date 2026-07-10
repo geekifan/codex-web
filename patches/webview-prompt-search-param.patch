@@ -1,147 +1,146 @@
---- a/webview/assets/app-initial~app-main~page-BF1QkwFT.js
-+++ b/webview/assets/app-initial~app-main~page-BF1QkwFT.js
-@@ -1022,6 +1022,7 @@
-   wf as dae,
-   wh as fae,
-   wn as pae,
-+  wl as useSearchParams,
-   wp as Uo,
-   xA as mae,
-   xC as Wo,
-@@ -64780,6 +64781,8 @@
-     _ = pl(),
-     v = is(),
-     y = v.state,
-+    [searchParams] = useSearchParams(),
-+    searchParamsPrompt = searchParams.get(`prompt`),
-     { data: b } = Tn(`account-info`, {
-       queryConfig: { enabled: l === `chatgpt` },
+--- a/webview/assets/app-initial~app-main~page-CtX5-cLy.js
++++ b/webview/assets/app-initial~app-main~page-CtX5-cLy.js
+@@ -29098,6 +29098,9 @@
+     g = Ma(),
+     _ = jr(),
+     v = _.state,
++    searchParamsPrompt = new URLSearchParams(window.location.search).get(
++      `prompt`,
++    ),
+     { data: y } = Ia(`account-info`, {
+       queryConfig: { enabled: c === `chatgpt` },
      }),
-@@ -65154,6 +65157,10 @@
-                                             homeRunLocationRemoteProject: U,
+@@ -29470,6 +29473,10 @@
+                                             homeRunLocationRemoteProject: ee,
                                              hideRunLocationDropdownOverride:
-                                               !ee,
+                                               !te,
 +                                            defaultText:
 +                                              searchParamsPrompt ?? void 0,
 +                                            initialPrompt:
 +                                              searchParamsPrompt ?? void 0,
-                                             onLocalConversationCreated: ie,
-                                             placeholderText: G,
+                                             onLocalConversationCreated: oe,
+                                             placeholderText: Me,
                                            }),
-@@ -65178,6 +65185,8 @@
-                           (0, F6.jsx)(mm, {
-                             browserConversationId: W,
-                             composerLayoutMode: `auto-single-line`,
-+                            defaultText: searchParamsPrompt ?? void 0,
-+                            initialPrompt: searchParamsPrompt ?? void 0,
-                             homeRunLocationRemoteProject: U,
-                             onLocalConversationCreated: ie,
+@@ -29492,9 +29499,11 @@
+                         children: [
+                           (0, lY.jsx)(Dn, { electron: !0, children: Ae }),
+                           (0, lY.jsx)(uC, {
+-                            browserConversationId: ae,
+-                            composerLayoutMode: `auto-single-line`,
+-                            homeRunLocationRemoteProject: ee,
++                          browserConversationId: ae,
++                          composerLayoutMode: `auto-single-line`,
++                          defaultText: searchParamsPrompt ?? void 0,
++                          initialPrompt: searchParamsPrompt ?? void 0,
++                          homeRunLocationRemoteProject: ee,
+                             onLocalConversationCreated: oe,
                              showWorkspaceDropdownInUtilityBar: !1,
---- a/webview/assets/app-initial~app-main~new-thread-panel-page~appgen-library-page~hotkey-window-thread-page~ho~iufn7mg3-DN861ZdI.js
-+++ b/webview/assets/app-initial~app-main~new-thread-panel-page~appgen-library-page~hotkey-window-thread-page~ho~iufn7mg3-DN861ZdI.js
-@@ -54648,6 +54648,7 @@
-   showUtilityBar: d,
-   composerModeAvailability: f,
-   placeholderText: p,
+                             hideRunLocationDropdownOverride: !te,
+--- a/webview/assets/app-initial~app-main~new-thread-panel-page~appgen-library-page~hotkey-window-thread-page~ho~iufn7mg3-Cdmi2Vi6.js
++++ b/webview/assets/app-initial~app-main~new-thread-panel-page~appgen-library-page~hotkey-window-thread-page~ho~iufn7mg3-Cdmi2Vi6.js
+@@ -45785,6 +45785,7 @@
+   showUtilityBar: u,
+   composerModeAvailability: d,
+   placeholderText: f,
 +  initialPrompt,
-   composerLayoutMode: m,
-   hotkeyWindowHomeFooterControls: h,
-   homeRunLocationRemoteProject: g,
-@@ -55176,13 +55177,20 @@
-     pa = (0, F9.useEffectEvent)(() => {
-       (cn && ua(cn),
-         da != null && ca(da),
--        sn && sn !== Cn.getText() && Cn.setPromptText(sn),
-+        sn && sn !== Cn.getText()
-+          ? Cn.setPromptText(sn)
-+          : !sn &&
+   composerLayoutMode: p,
+   hotkeyWindowHomeFooterControls: m,
+   homeRunLocationRemoteProject: h,
+@@ -46315,13 +46316,20 @@
+     Ua = (0, t0.useEffectEvent)(() => {
+       (bn && Ba(bn),
+         Va != null && Ra(Va),
+-        _n && _n !== In.getText() && In.setPromptText(_n),
++        _n && _n !== In.getText()
++          ? In.setPromptText(_n)
++          : !_n &&
 +              initialPrompt != null &&
 +              initialPrompt !== `` &&
-+              Cn.getText() === ``
-+            ? Cn.setPromptText(initialPrompt)
++              In.getText() === ``
++            ? In.setPromptText(initialPrompt)
 +            : null,
-         ln != null && ln.length > 0 && $i(ln),
-         un != null && un.length > 0 && li(un));
+         xn != null && xn.length > 0 && ka(xn),
+         Sn != null && Sn.length > 0 && Ni(Sn));
      });
-   (0, F9.useEffect)(() => {
-     pa();
--  }, [sn, cn, ln, un, da]);
-+  }, [sn, cn, ln, un, da, initialPrompt]);
-   let [ma, ha] = Ut(`composer_prefill`),
-     ga = (0, F9.useEffectEvent)(() => {
-       let e = ma?.commentAttachments,
-@@ -57685,7 +57693,7 @@
-     ((J9 = Y()), Gt(), (Y9 = t(G(), 1)), Za(), Cg(), mu(), (X9 = Z()));
+   (0, t0.useEffect)(() => {
+     Ua();
+-  }, [_n, bn, xn, Sn, Va]);
++  }, [_n, bn, xn, Sn, Va, initialPrompt]);
+   let [Wa, Ga] = ef(`composer_prefill`),
+     qa = (0, t0.useEffectEvent)(() => {
+       let e = Wa?.commentAttachments,
+@@ -48823,7 +48831,7 @@
+     ((g0 = X()), za(), (_0 = t(Ya(), 1)), Cs(), wr(), Yo(), (v0 = Z()));
    });
- function uee(e) {
--  let t = (0, Z9.c)(107),
-+  let t = (0, Z9.c)(109),
+ function b0(e) {
+-  let t = (0, C0.c)(107),
++  let t = (0, C0.c)(109),
      {
        browserConversationId: n,
        className: r,
-@@ -57705,6 +57713,8 @@
-       hideRunLocationDropdownOverride: _,
-       composerModeAvailability: v,
-       placeholderText: y,
+@@ -48843,6 +48851,8 @@
+       hideRunLocationDropdownOverride: v,
+       composerModeAvailability: y,
+       placeholderText: b,
 +      defaultText,
 +      initialPrompt,
-       composerLayoutMode: b,
-       hotkeyWindowHomeFooterControls: x,
-       homeRunLocationRemoteProject: S,
-@@ -57957,7 +57967,7 @@
-       (t[57] = ze),
-       (t[58] = Be));
-   let Ve = cee,
--    He = Kd(W) ? `prompt` : `plain`,
-+    He = Kd(defaultText ?? W) ? `prompt` : `plain`,
-     Ue;
-   t[59] !== i || t[60] !== O || t[61] !== x
-     ? ((Ue =
-@@ -58008,7 +58018,8 @@
-   t[90] !== We ||
-   t[91] !== Ge ||
-   t[92] !== N ||
+       composerLayoutMode: x,
+       hotkeyWindowHomeFooterControls: S,
+       homeRunLocationRemoteProject: T,
+@@ -49095,7 +49105,7 @@
+       (t[57] = Ve),
+       (t[58] = He));
+   let Ue = h0,
+-    We = o(J) ? `prompt` : `plain`,
++    We = o(defaultText ?? J) ? `prompt` : `plain`,
+     Ge;
+   t[59] !== i || t[60] !== j || t[61] !== S
+     ? ((Ge =
+@@ -49146,7 +49156,8 @@
+   t[90] !== Ke ||
+   t[91] !== qe ||
+   t[92] !== L ||
 -  t[93] !== null
 +  t[93] !== null ||
 +  t[107] !== initialPrompt
-     ? ((Ke = (0, $9.jsx)(M9, {
-         aboveComposerHeaderContent: We,
+     ? ((Je = (0, T0.jsx)(Q1, {
+         aboveComposerHeaderContent: Ke,
          clientThreadId: te,
-@@ -58030,6 +58041,7 @@
-         hideRunLocationDropdownOverride: F,
-         composerModeAvailability: v,
-         placeholderText: y,
+@@ -49168,6 +49179,7 @@
+         hideRunLocationDropdownOverride: z,
+         composerModeAvailability: y,
+         placeholderText: b,
 +        initialPrompt,
-         composerLayoutMode: I,
-         hotkeyWindowHomeFooterControls: x,
-         homeRunLocationRemoteProject: S,
-@@ -58073,6 +58085,7 @@
-       (t[91] = Ge),
-       (t[92] = N),
+         composerLayoutMode: B,
+         hotkeyWindowHomeFooterControls: S,
+         homeRunLocationRemoteProject: T,
+@@ -49211,6 +49223,7 @@
+       (t[91] = qe),
+       (t[92] = L),
        (t[93] = null),
 +      (t[107] = initialPrompt),
-       (t[94] = Ke))
-     : (Ke = t[94]);
-   let qe;
-@@ -58081,10 +58094,11 @@
-   t[97] !== W ||
-   t[98] !== He ||
-   t[99] !== Ue ||
--  t[100] !== Ke
-+  t[100] !== Ke ||
+       (t[94] = Je))
+     : (Je = t[94]);
+   let Xe;
+@@ -49219,10 +49232,11 @@
+   t[97] !== J ||
+   t[98] !== We ||
+   t[99] !== Ge ||
+-  t[100] !== Je
++  t[100] !== Je ||
 +  t[108] !== defaultText
-     ? ((qe = (0, $9.jsxs)(
-         Ve,
--        { defaultText: W, defaultTextKind: He, children: [Ue, Ke] },
-+        { defaultText: defaultText ?? W, defaultTextKind: He, children: [Ue, Ke] },
+     ? ((Xe = (0, T0.jsxs)(
+         Ue,
+-        { defaultText: J, defaultTextKind: We, children: [Ge, Je] },
++        { defaultText: defaultText ?? J, defaultTextKind: We, children: [Ge, Je] },
          ie,
        )),
-       (t[95] = Ve),
-@@ -58093,6 +58107,7 @@
-       (t[98] = He),
-       (t[99] = Ue),
-       (t[100] = Ke),
+       (t[95] = Ue),
+@@ -49231,6 +49245,7 @@
+       (t[98] = We),
+       (t[99] = Ge),
+       (t[100] = Je),
 +      (t[108] = defaultText),
-       (t[101] = qe))
-     : (qe = t[101]);
-   let Je;
+       (t[101] = Xe))
+     : (Xe = t[101]);
+   let Ze;
