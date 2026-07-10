@@ -38,6 +38,12 @@ type RendererToMainMessage =
       legacyRoot: string | null;
       projectId: string;
       root?: string;
+    }
+  | {
+      type: "thread-project-assignment-request";
+      requestId: string;
+      threadId: string;
+      assignment: ThreadProjectAssignment | null;
     };
 
 type MainToRendererMessage =
@@ -81,6 +87,17 @@ type MainToRendererMessage =
       requestId: string;
       ok: false;
       errorMessage: string;
+    }
+  | {
+      type: "thread-project-assignment-result";
+      requestId: string;
+      ok: true;
+    }
+  | {
+      type: "thread-project-assignment-result";
+      requestId: string;
+      ok: false;
+      errorMessage: string;
     };
 
 type WritableRoot = {
@@ -109,6 +126,15 @@ type RemoveRootRequest = {
 type ClearRootsRequest = {
   legacyRoot: string | null;
   projectId: string;
+};
+
+type ThreadProjectAssignment = {
+  projectId: string;
+  projectKind: "local" | "remote";
+  path?: string;
+  cwd?: string;
+  hostId?: string;
+  pendingCoreUpdate: boolean;
 };
 
 type BridgeServerFrame =
@@ -178,6 +204,12 @@ type ElectronShimState = {
       removeRoot?: (
         request: RemoveRootRequest,
       ) => Promise<ProjectWritableRootsResult>;
+    };
+    threadProjectAssignments?: {
+      setAssignment?: (request: {
+        threadId: string;
+        assignment: ThreadProjectAssignment | null;
+      }) => Promise<void>;
     };
     requestUserInputAutoResolution?: {
       recordConversationActivity?: (args: {
@@ -274,6 +306,13 @@ const pendingProjectWritableRoots = new Map<
     resolve: (result: ProjectWritableRootsResult) => void;
   }
 >();
+const pendingThreadProjectAssignments = new Map<
+  string,
+  {
+    reject: (reason?: unknown) => void;
+    resolve: () => void;
+  }
+>();
 const rendererListeners = new Map<string, Set<IpcListener>>();
 
 function unimplemented(method: string): never {
@@ -334,6 +373,20 @@ function handleIncomingMessage(message: MainToRendererMessage): void {
     pendingProjectWritableRoots.delete(message.requestId);
     if (message.ok) {
       pending.resolve(message.result);
+      return;
+    }
+    pending.reject(new Error(message.errorMessage));
+    return;
+  }
+
+  if (message.type === "thread-project-assignment-result") {
+    const pending = pendingThreadProjectAssignments.get(message.requestId);
+    if (!pending) {
+      return;
+    }
+    pendingThreadProjectAssignments.delete(message.requestId);
+    if (message.ok) {
+      pending.resolve();
       return;
     }
     pending.reject(new Error(message.errorMessage));
@@ -696,6 +749,21 @@ function requestProjectWritableRoots(
   });
 }
 
+function requestThreadProjectAssignment(request: {
+  threadId: string;
+  assignment: ThreadProjectAssignment | null;
+}): Promise<void> {
+  const requestId = nextRequestId();
+  return new Promise((resolve, reject) => {
+    pendingThreadProjectAssignments.set(requestId, { resolve, reject });
+    enqueueMessage({
+      type: "thread-project-assignment-request",
+      requestId,
+      ...request,
+    });
+  });
+}
+
 const themeMediaQuery = matchMedia("(prefers-color-scheme: dark)");
 const mobileMediaQuery = matchMedia("(max-width: 768px)");
 const initialSidebarState = !mobileMediaQuery.matches;
@@ -729,6 +797,10 @@ electronShim.services = {
     },
     clearRoots: (request) => requestProjectWritableRoots("clearRoots", request),
     removeRoot: (request) => requestProjectWritableRoots("removeRoot", request),
+  },
+  threadProjectAssignments: {
+    ...electronShim.services?.threadProjectAssignments,
+    setAssignment: requestThreadProjectAssignment,
   },
   requestUserInputAutoResolution: {
     ...electronShim.services?.requestUserInputAutoResolution,

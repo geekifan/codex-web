@@ -21,6 +21,12 @@ import {
   type ProjectWritableRoots,
   type ProjectWritableRootsResult,
 } from "./project-writable-roots";
+import {
+  createThreadProjectAssignmentsService,
+  threadProjectAssignmentsValue,
+  type ThreadProjectAssignment,
+  type ThreadProjectAssignments,
+} from "./thread-project-assignments";
 
 type ServerOptions = {
   host: string;
@@ -54,6 +60,12 @@ type RendererToMainMessage =
       legacyRoot: string | null;
       projectId: string;
       root?: string;
+    }
+  | {
+      type: "thread-project-assignment-request";
+      requestId: string;
+      threadId: string;
+      assignment: ThreadProjectAssignment | null;
     };
 
 type MainToRendererMessage =
@@ -94,6 +106,17 @@ type MainToRendererMessage =
     }
   | {
       type: "project-writable-roots-result";
+      requestId: string;
+      ok: false;
+      errorMessage: string;
+    }
+  | {
+      type: "thread-project-assignment-result";
+      requestId: string;
+      ok: true;
+    }
+  | {
+      type: "thread-project-assignment-result";
       requestId: string;
       ok: false;
       errorMessage: string;
@@ -217,6 +240,7 @@ function errorMessage(error: unknown): string {
 const CODEX_MESSAGE_FROM_VIEW = "codex_desktop:message-from-view";
 const CODEX_MESSAGE_FOR_VIEW = "codex_desktop:message-for-view";
 const PROJECT_WRITABLE_ROOTS_KEY = "project-writable-roots";
+const THREAD_PROJECT_ASSIGNMENTS_KEY = "thread-project-assignments";
 
 type CodexFetchResponse = {
   type: "fetch-response";
@@ -351,6 +375,26 @@ async function setProjectWritableRoots(
   }
 }
 
+async function getThreadProjectAssignments(): Promise<ThreadProjectAssignments> {
+  const response = await postCodexRequest<{ value?: unknown }>(
+    "get-global-state",
+    { key: THREAD_PROJECT_ASSIGNMENTS_KEY },
+  );
+  return threadProjectAssignmentsValue(response.value);
+}
+
+async function setThreadProjectAssignments(
+  value: ThreadProjectAssignments,
+): Promise<void> {
+  const response = await postCodexRequest<{ success?: unknown }>(
+    "set-global-state",
+    { key: THREAD_PROJECT_ASSIGNMENTS_KEY, value },
+  );
+  if (response.success !== true) {
+    throw new Error("Failed to set thread project assignments");
+  }
+}
+
 async function getWorkspaceDirectoryEntries({
   directoryPath,
   directoriesOnly,
@@ -453,6 +497,23 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
       });
     },
     setValue: setProjectWritableRoots,
+  });
+  const threadProjectAssignments = createThreadProjectAssignmentsService({
+    getValue: getThreadProjectAssignments,
+    notifyChanged: ({ threadId, assignment }) => {
+      bridgeState.broadcastToRenderer?.({
+        type: "ipc-main-event",
+        channel: CODEX_MESSAGE_FOR_VIEW,
+        args: [
+          {
+            type: "thread-project-assignment-updated",
+            threadId,
+            assignment,
+          },
+        ],
+      });
+    },
+    setValue: setThreadProjectAssignments,
   });
 
   await app.register(fastifyMultipart, {
@@ -655,6 +716,28 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
         .catch((error) => {
           session.send({
             type: "project-writable-roots-result",
+            requestId,
+            ok: false,
+            errorMessage: errorMessage(error),
+          });
+        });
+      return;
+    }
+
+    if (message.type === "thread-project-assignment-request") {
+      const { requestId, threadId, assignment } = message;
+      threadProjectAssignments
+        .setAssignment({ threadId, assignment })
+        .then(() => {
+          session.send({
+            type: "thread-project-assignment-result",
+            requestId,
+            ok: true,
+          });
+        })
+        .catch((error) => {
+          session.send({
+            type: "thread-project-assignment-result",
             requestId,
             ok: false,
             errorMessage: errorMessage(error),

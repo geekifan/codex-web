@@ -1,6 +1,6 @@
 --- a/webview/assets/app-initial~app-main~pull-request-code-review~onboarding-page~hotkey-window-thread-page~cha~b76hmflu-y0KJWbm3.js
 +++ b/webview/assets/app-initial~app-main~pull-request-code-review~onboarding-page~hotkey-window-thread-page~cha~b76hmflu-y0KJWbm3.js
-@@ -48433,7 +48433,19 @@
+@@ -48433,7 +48433,21 @@
            (super(), (this.#e = e));
          }
        }),
@@ -11,6 +11,8 @@
 +        downloads: p0e,
 +        projectWritableRoots:
 +          window.__ELECTRON_SHIM__?.services?.projectWritableRoots,
++        threadProjectAssignments:
++          window.__ELECTRON_SHIM__?.services?.threadProjectAssignments,
 +        workspaceFiles: {},
 +        requestUserInputAutoResolution: {
 +          recordConversationActivity: () => undefined,

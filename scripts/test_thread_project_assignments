@@ -1,0 +1,187 @@
+#!/usr/bin/env node
+
+const assert = require("node:assert/strict");
+const test = require("node:test");
+
+const {
+  createThreadProjectAssignmentsService,
+  threadProjectAssignmentsValue,
+} = require("../src/server/thread-project-assignments.js");
+
+function createService(initialValue = {}) {
+  let value = initialValue;
+  const notifications = [];
+  const service = createThreadProjectAssignmentsService({
+    getValue: async () => value,
+    notifyChanged: (request) => notifications.push(request),
+    setValue: async (nextValue) => {
+      value = nextValue;
+    },
+  });
+  return {
+    get notifications() {
+      return notifications;
+    },
+    get value() {
+      return value;
+    },
+    service,
+  };
+}
+
+test("setAssignment stores an assignment and broadcasts the upstream payload", async () => {
+  const fixture = createService();
+  const request = {
+    threadId: "thread-1",
+    assignment: {
+      projectKind: "remote",
+      projectId: "project-1",
+      path: "/workspace",
+      hostId: "host-1",
+      pendingCoreUpdate: false,
+    },
+  };
+
+  await fixture.service.setAssignment(request);
+
+  assert.deepEqual(fixture.value, { "thread-1": request.assignment });
+  assert.deepEqual(fixture.notifications, [request]);
+});
+
+test("setAssignment ignores a structurally equal assignment", async () => {
+  const assignment = {
+    projectKind: "local",
+    projectId: "project-1",
+    path: "/workspace",
+    pendingCoreUpdate: false,
+  };
+  const fixture = createService({ "thread-1": assignment });
+
+  await fixture.service.setAssignment({
+    threadId: "thread-1",
+    assignment: { ...assignment },
+  });
+
+  assert.deepEqual(fixture.value, { "thread-1": assignment });
+  assert.deepEqual(fixture.notifications, []);
+});
+
+test("setAssignment compares assignments by their upstream effective path", async () => {
+  const fixture = createService({
+    "thread-1": {
+      projectKind: "local",
+      projectId: "project-1",
+      path: "/stale-path",
+      cwd: "/workspace",
+      pendingCoreUpdate: false,
+    },
+  });
+
+  await fixture.service.setAssignment({
+    threadId: "thread-1",
+    assignment: {
+      projectKind: "local",
+      projectId: "project-1",
+      path: "/workspace",
+      pendingCoreUpdate: false,
+    },
+  });
+
+  assert.equal(fixture.notifications.length, 0);
+});
+
+test("setAssignment with null removes the assignment", async () => {
+  const fixture = createService({
+    "thread-1": {
+      projectKind: "local",
+      projectId: "project-1",
+      path: "/workspace",
+      pendingCoreUpdate: false,
+    },
+  });
+
+  await fixture.service.setAssignment({ threadId: "thread-1", assignment: null });
+
+  assert.deepEqual(fixture.value, {});
+  assert.deepEqual(fixture.notifications, [
+    { threadId: "thread-1", assignment: null },
+  ]);
+});
+
+test("setAssignment mutations are serialized", async () => {
+  const fixture = createService();
+
+  await Promise.all([
+    fixture.service.setAssignment({
+      threadId: "thread-1",
+    assignment: {
+      projectKind: "local",
+      projectId: "project-1",
+      pendingCoreUpdate: false,
+    },
+    }),
+    fixture.service.setAssignment({
+      threadId: "thread-2",
+      assignment: {
+        projectKind: "remote",
+        projectId: "project-2",
+        path: "/workspace",
+        pendingCoreUpdate: false,
+      },
+    }),
+  ]);
+
+  assert.deepEqual(fixture.value, {
+    "thread-1": {
+      projectKind: "local",
+      projectId: "project-1",
+      pendingCoreUpdate: false,
+    },
+    "thread-2": {
+      projectKind: "remote",
+      projectId: "project-2",
+      path: "/workspace",
+      pendingCoreUpdate: false,
+    },
+  });
+});
+
+test("invalid persisted assignments are omitted", () => {
+  assert.deepEqual(
+    threadProjectAssignmentsValue({
+      valid: {
+        projectKind: "local",
+        projectId: "project-1",
+        pendingCoreUpdate: false,
+      },
+      invalid: { projectKind: "remote", projectId: "project-2" },
+    }),
+    {
+      valid: {
+        projectKind: "local",
+        projectId: "project-1",
+        pendingCoreUpdate: false,
+      },
+    },
+  );
+});
+
+test("persisted local assignments discard fields outside the upstream schema", () => {
+  assert.deepEqual(
+    threadProjectAssignmentsValue({
+      "thread-1": {
+        projectKind: "local",
+        projectId: "project-1",
+        hostId: 42,
+        pendingCoreUpdate: false,
+      },
+    }),
+    {
+      "thread-1": {
+        projectKind: "local",
+        projectId: "project-1",
+        pendingCoreUpdate: false,
+      },
+    },
+  );
+});
