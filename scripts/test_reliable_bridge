@@ -30,12 +30,13 @@ class FakeSocket extends EventEmitter {
   }
 }
 
-function createSession(received) {
+function createSession(received, options = {}) {
   let disposed = false;
   const session = new ReliableBridgeSession({
     connectionId: "connection-a",
     serverEpoch: "epoch-a",
     graceTimeMs: 60_000,
+    ...options,
     onDispose: () => {
       disposed = true;
     },
@@ -145,5 +146,35 @@ test("keeps the replacement socket alive when taking over", () => {
   assert.equal(secondSocket.readyState, 1);
   assert.equal(isDisposed(), false);
   assert.deepEqual(received, [{ value: "active" }]);
+  session.dispose("test complete");
+});
+
+test("limits replay to an acknowledgement-driven send window", () => {
+  const { session } = createSession([], { maxInFlightBytes: 100 });
+  const firstSocket = new FakeSocket();
+  session.attach(firstSocket);
+  firstSocket.close();
+  session.send({ value: "a".repeat(60) });
+  session.send({ value: "b".repeat(60) });
+  session.send({ value: "c".repeat(60) });
+
+  const secondSocket = new FakeSocket();
+  session.attach(secondSocket);
+  assert.deepEqual(
+    dataFrames(secondSocket).map((frame) => frame.id),
+    [1],
+  );
+
+  secondSocket.receive({ type: "bridge-ack", ack: 1 });
+  assert.deepEqual(
+    dataFrames(secondSocket).map((frame) => frame.id),
+    [1, 2],
+  );
+
+  secondSocket.receive({ type: "bridge-ack", ack: 2 });
+  assert.deepEqual(
+    dataFrames(secondSocket).map((frame) => frame.id),
+    [1, 2, 3],
+  );
   session.dispose("test complete");
 });

@@ -100,7 +100,8 @@ type OutgoingBridgeMessage = {
 const BRIDGE_PROTOCOL_VERSION = 2;
 const RECONNECT_DELAY_MS = 1_000;
 const SOCKET_TIMEOUT_MS = 20_000;
-const MAX_UNACKED_BYTES = 16 * 1024 * 1_024;
+const MAX_UNACKED_BYTES = 64 * 1024 * 1_024;
+const MAX_IN_FLIGHT_BYTES = 256 * 1024;
 
 type MemoryNavigationChange = {
   action: "POP" | "PUSH" | "REPLACE";
@@ -168,6 +169,7 @@ let lastIncomingAt = Date.now();
 let serverEpoch: string | null = null;
 let outgoingMessageId = 0;
 let outgoingAckId = 0;
+let outgoingSentId = 0;
 let outgoingUnackedBytes = 0;
 let incomingMessageId = 0;
 const connectionId = crypto.randomUUID();
@@ -324,7 +326,7 @@ function enqueueMessage(message: RendererToMainMessage): void {
     return;
   }
   ensureSocket();
-  sendData(outgoing);
+  pumpOutgoing();
 }
 
 function handleBridgeFrame(frame: BridgeServerFrame): void {
@@ -340,7 +342,8 @@ function handleBridgeFrame(frame: BridgeServerFrame): void {
     serverEpoch = frame.serverEpoch;
     socketReady = true;
     sendAck();
-    replayUnacked();
+    outgoingSentId = outgoingAckId;
+    pumpOutgoing();
     return;
   }
 
@@ -363,8 +366,9 @@ function handleBridgeFrame(frame: BridgeServerFrame): void {
   }
 
   if (frame.type === "bridge-replay-request") {
-    if (acceptAck(frame.ack)) {
-      replayUnacked();
+    if (acceptAck(frame.ack, false)) {
+      outgoingSentId = frame.ack;
+      pumpOutgoing();
     }
     return;
   }
@@ -400,7 +404,7 @@ function acceptMessage(
   sendRaw({ type: "bridge-replay-request", ack: incomingMessageId });
 }
 
-function acceptAck(ack: number): boolean {
+function acceptAck(ack: number, pump = true): boolean {
   if (!Number.isSafeInteger(ack) || ack < 0 || ack > outgoingMessageId) {
     resetBridge("invalid reliable bridge acknowledgement");
     return false;
@@ -416,12 +420,33 @@ function acceptAck(ack: number): boolean {
     0,
   );
   outgoingUnacked = outgoingUnacked.filter((message) => message.id > ack);
+  if (pump) {
+    pumpOutgoing();
+  }
   return true;
 }
 
-function replayUnacked(): void {
+function pumpOutgoing(): void {
+  if (!socketReady) {
+    return;
+  }
+
+  let inFlightBytes = outgoingUnacked
+    .filter((message) => message.id <= outgoingSentId)
+    .reduce((total, message) => total + message.byteLength, 0);
   for (const message of outgoingUnacked) {
+    if (message.id <= outgoingSentId) {
+      continue;
+    }
+    if (
+      inFlightBytes > 0 &&
+      inFlightBytes + message.byteLength > MAX_IN_FLIGHT_BYTES
+    ) {
+      break;
+    }
     sendData(message);
+    outgoingSentId = message.id;
+    inFlightBytes += message.byteLength;
   }
 }
 
@@ -757,6 +782,11 @@ export const ipcRenderer = {
 };
 
 ensureSocket();
+window.addEventListener("pagehide", () => {
+  if (socketReady) {
+    sendRaw({ type: "bridge-disconnect" });
+  }
+});
 
 export const contextBridge = {
   exposeInMainWorld(_key: string, _api: unknown): void {

@@ -411,7 +411,6 @@ class BrowserWindow {
           );
         },
         send: (...sendArgs: unknown[]): void => {
-          log(`BrowserWindow#${this.id}.webContents.send`, sendArgs);
           if (sendArgs.length === 0 || typeof sendArgs[0] !== "string") {
             return;
           }

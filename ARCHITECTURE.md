@@ -56,8 +56,9 @@ session. both sides assign sequence numbers, acknowledge received messages and
 retain unacknowledged messages. when the socket reconnects, the browser presents
 the same connection id and the server attaches the new socket to the existing
 session before replaying anything that was not acknowledged. bridge sessions are
-kept for five minutes after a socket closes and are bounded to 16 mib of
-unacknowledged messages.
+kept for five minutes after a socket closes and are bounded to 64 mib of
+unacknowledged messages. replay is limited to a 256 kib acknowledgement-driven
+send window so a large backlog cannot flood a newly connected browser.
 
 the ipc websocket is hosted by [main.ts](./src/server/main.ts). this process
 binds a port and listens for incoming websocket connections. it also shims

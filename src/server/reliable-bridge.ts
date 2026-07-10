@@ -3,7 +3,8 @@ import { WebSocket, type RawData } from "ws";
 export const RELIABLE_BRIDGE_PROTOCOL_VERSION = 2;
 
 const DEFAULT_GRACE_TIME_MS = 5 * 60 * 1_000;
-const DEFAULT_MAX_UNACKED_BYTES = 16 * 1024 * 1_024;
+const DEFAULT_MAX_UNACKED_BYTES = 64 * 1024 * 1_024;
+const DEFAULT_MAX_IN_FLIGHT_BYTES = 256 * 1024;
 const KEEPALIVE_INTERVAL_MS = 5_000;
 const SOCKET_TIMEOUT_MS = 20_000;
 
@@ -31,6 +32,9 @@ type ReliableBridgeClientFrame<T> =
     }
   | {
       type: "bridge-keepalive";
+    }
+  | {
+      type: "bridge-disconnect";
     };
 
 type OutgoingMessage<T> = {
@@ -44,6 +48,7 @@ type ReliableBridgeSessionOptions<TIncoming> = {
   serverEpoch: string;
   graceTimeMs?: number;
   maxUnackedBytes?: number;
+  maxInFlightBytes?: number;
   onDispose: (reason: string) => void;
   onMessage: (message: TIncoming) => void;
 };
@@ -54,11 +59,13 @@ export class ReliableBridgeSession<TIncoming, TOutgoing> {
 
   private readonly graceTimeMs: number;
   private readonly maxUnackedBytes: number;
+  private readonly maxInFlightBytes: number;
   private readonly onDispose: (reason: string) => void;
   private readonly onMessage: (message: TIncoming) => void;
   private socket: WebSocket | null = null;
   private outgoingMessageId = 0;
   private outgoingAckId = 0;
+  private outgoingSentId = 0;
   private outgoingUnackedBytes = 0;
   private outgoingUnacked: OutgoingMessage<TOutgoing>[] = [];
   private incomingMessageId = 0;
@@ -72,6 +79,8 @@ export class ReliableBridgeSession<TIncoming, TOutgoing> {
     this.serverEpoch = options.serverEpoch;
     this.graceTimeMs = options.graceTimeMs ?? DEFAULT_GRACE_TIME_MS;
     this.maxUnackedBytes = options.maxUnackedBytes ?? DEFAULT_MAX_UNACKED_BYTES;
+    this.maxInFlightBytes =
+      options.maxInFlightBytes ?? DEFAULT_MAX_IN_FLIGHT_BYTES;
     this.onDispose = options.onDispose;
     this.onMessage = options.onMessage;
   }
@@ -96,7 +105,8 @@ export class ReliableBridgeSession<TIncoming, TOutgoing> {
       serverEpoch: this.serverEpoch,
     });
     this.writeAck();
-    this.replayUnacked();
+    this.outgoingSentId = this.outgoingAckId;
+    this.pumpOutgoing();
     this.startKeepalive();
   }
 
@@ -119,7 +129,7 @@ export class ReliableBridgeSession<TIncoming, TOutgoing> {
       return;
     }
 
-    this.writeData(outgoing);
+    this.pumpOutgoing();
   }
 
   dispose(reason: string): void {
@@ -168,9 +178,15 @@ export class ReliableBridgeSession<TIncoming, TOutgoing> {
     }
 
     if (frame.type === "bridge-replay-request") {
-      if (this.acceptAck(frame.ack)) {
-        this.replayUnacked();
+      if (this.acceptAck(frame.ack, false)) {
+        this.outgoingSentId = frame.ack;
+        this.pumpOutgoing();
       }
+      return;
+    }
+
+    if (frame.type === "bridge-disconnect") {
+      this.dispose("client disconnected");
       return;
     }
 
@@ -231,7 +247,7 @@ export class ReliableBridgeSession<TIncoming, TOutgoing> {
     });
   }
 
-  private acceptAck(ack: number): boolean {
+  private acceptAck(ack: number, pump = true): boolean {
     if (!Number.isSafeInteger(ack) || ack < 0 || ack > this.outgoingMessageId) {
       this.reset("invalid reliable bridge acknowledgement");
       return false;
@@ -251,12 +267,33 @@ export class ReliableBridgeSession<TIncoming, TOutgoing> {
     this.outgoingUnacked = this.outgoingUnacked.filter(
       (message) => message.id > ack,
     );
+    if (pump) {
+      this.pumpOutgoing();
+    }
     return true;
   }
 
-  private replayUnacked(): void {
+  private pumpOutgoing(): void {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    let inFlightBytes = this.outgoingUnacked
+      .filter((message) => message.id <= this.outgoingSentId)
+      .reduce((total, message) => total + message.byteLength, 0);
     for (const message of this.outgoingUnacked) {
+      if (message.id <= this.outgoingSentId) {
+        continue;
+      }
+      if (
+        inFlightBytes > 0 &&
+        inFlightBytes + message.byteLength > this.maxInFlightBytes
+      ) {
+        break;
+      }
       this.writeData(message);
+      this.outgoingSentId = message.id;
+      inFlightBytes += message.byteLength;
     }
   }
 
