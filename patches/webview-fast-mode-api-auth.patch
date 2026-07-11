@@ -1,0 +1,14 @@
+--- a/webview/assets/app-initial~app-main~onboarding-page~hotkey-window-thread-page~quick-chat-window-page~chatg~k0ede4gb-C17KDkOa.js
++++ b/webview/assets/app-initial~app-main~onboarding-page~hotkey-window-thread-page~quick-chat-window-page~chatg~k0ede4gb-C17KDkOa.js
+@@ -17228,9 +17228,10 @@
+ function Ey(e) {
+   let t = (0, Dy.c)(6),
+     n = Et(Ir),
+     r = e?.hostId ?? n,
+     i = wc(r),
+-    a = i?.authMethod === `chatgpt`,
++    a =
++      i?.authMethod === `chatgpt` || i?.authMethod === `apikey`,
+     o = i?.authMethod ?? null,
+     s;
+   t[0] !== r || t[1] !== o

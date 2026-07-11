@@ -833,6 +833,14 @@ electronShim.overrideAdapter = {
     return null;
   },
   getGateOverride(e) {
+    if (e.name === "3902016271") {
+      // guardian_approval: expose "Approve for me" in the web host.
+      return {
+        ...e,
+        value: true,
+      };
+    }
+
     if (e.name === "3836321032") {
       // Enable the Pierre workspace file editor in the web host.
       return {
