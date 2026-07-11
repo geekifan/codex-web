@@ -23,7 +23,7 @@ the context the patches were being applied in.
 there are a few places to update next.
 
 1. `appVersion` in default.nix and `hash` in `codexZip`.
-2. `APP_VERSION` in ./scripts/prepare
+2. `APP_VERSION` and `APP_SHA256` in ./scripts/prepare
 
 then temporarily comment out the patch lines in ./scripts/prepare_asar and run
 

@@ -1,18 +1,62 @@
 #!/usr/bin/env bash
 set -euxo pipefail
 
-TEMP_DIR="$(mktemp -d)"
-
 APP_VERSION="26.707.31428"
+APP_SHA256="sha256-/9w1GlBxBdVddGTjNAMCx1i4pUuSZxHEsVvzc8y0fWQ="
 DOWNLOAD_URL="https://persistent.oaistatic.com/codex-app-prod/ChatGPT-darwin-arm64-$APP_VERSION.zip"
-if command -v aria2c >/dev/null; then
-  aria2c --continue=true --split=16 --max-connection-per-server=16 \
-    --min-split-size=1M --file-allocation=none \
-    --dir "$TEMP_DIR" --out file.zip "$DOWNLOAD_URL"
+CACHE_ZIP="scratch/asar.zip"
+CACHE_PART="$CACHE_ZIP.part"
+
+sha256_matches() {
+  node - "$1" "$APP_SHA256" <<'NODE'
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+
+const [filePath, expected] = process.argv.slice(2);
+const hash = crypto.createHash("sha256");
+const input = fs.createReadStream(filePath);
+input.on("data", (chunk) => hash.update(chunk));
+input.on("error", () => {
+  process.exitCode = 1;
+});
+input.on("end", () => {
+  process.exitCode = `sha256-${hash.digest("base64")}` === expected ? 0 : 1;
+});
+NODE
+}
+
+download_archive() {
+  rm -f "$CACHE_PART"
+  if command -v aria2c >/dev/null; then
+    aria2c --continue=true --split=16 --max-connection-per-server=16 \
+      --min-split-size=1M --file-allocation=none \
+      --dir scratch --out "$(basename "$CACHE_PART")" "$DOWNLOAD_URL"
+  else
+    curl --fail --location --retry 3 --output "$CACHE_PART" "$DOWNLOAD_URL"
+  fi
+
+  if ! sha256_matches "$CACHE_PART"; then
+    rm -f "$CACHE_PART"
+    echo "Downloaded Codex archive failed SHA-256 verification" >&2
+    exit 1
+  fi
+
+  mv "$CACHE_PART" "$CACHE_ZIP"
+}
+
+if [[ -n "${HOSTED_CODEX_APP_ZIP:-}" ]]; then
+  if ! sha256_matches "$HOSTED_CODEX_APP_ZIP"; then
+    echo "HOSTED_CODEX_APP_ZIP failed SHA-256 verification" >&2
+    exit 1
+  fi
+  archive_zip="$HOSTED_CODEX_APP_ZIP"
 else
-  curl -o "$TEMP_DIR/file.zip" "$DOWNLOAD_URL"
+  mkdir -p scratch
+  if [[ ! -f "$CACHE_ZIP" ]] || ! sha256_matches "$CACHE_ZIP"; then
+    rm -f "$CACHE_ZIP"
+    download_archive
+  fi
+  archive_zip="$CACHE_ZIP"
 fi
 
-HOSTED_CODEX_APP_ZIP="$TEMP_DIR/file.zip" bash ./scripts/prepare_asar
-
-rm -rf "$TEMP_DIR"
+HOSTED_CODEX_APP_ZIP="$archive_zip" bash ./scripts/prepare_asar
