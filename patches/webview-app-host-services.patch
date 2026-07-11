@@ -1,6 +1,6 @@
 --- a/webview/assets/app-initial~app-main~pull-request-code-review~onboarding-page~hotkey-window-thread-page~cha~b76hmflu-y0KJWbm3.js
 +++ b/webview/assets/app-initial~app-main~pull-request-code-review~onboarding-page~hotkey-window-thread-page~cha~b76hmflu-y0KJWbm3.js
-@@ -48433,7 +48433,21 @@
+@@ -48429,7 +48429,30 @@
            (super(), (this.#e = e));
          }
        }),
@@ -13,6 +13,15 @@
 +          window.__ELECTRON_SHIM__?.services?.projectWritableRoots,
 +        threadProjectAssignments:
 +          window.__ELECTRON_SHIM__?.services?.threadProjectAssignments,
++        appServerHistorySnapshots:
++          window.__ELECTRON_SHIM__?.services?.appServerHistorySnapshots,
++        localEnvironments:
++          window.__ELECTRON_SHIM__?.services?.localEnvironments,
++        pluginScheduledTasks:
++          window.__ELECTRON_SHIM__?.services?.pluginScheduledTasks,
++        threadArchive: window.__ELECTRON_SHIM__?.services?.threadArchive,
++        threadMetadataGeneration:
++          window.__ELECTRON_SHIM__?.services?.threadMetadataGeneration,
 +        workspaceFiles: {},
 +        requestUserInputAutoResolution: {
 +          recordConversationActivity: () => undefined,
@@ -23,7 +32,7 @@
    });
  function v0e() {
    let { port1: e, port2: t } = new MessageChannel();
-@@ -48447,6 +48457,10 @@
+@@ -48443,6 +48466,10 @@
    );
  }
  async function y0e() {

@@ -1,0 +1,46 @@
+--- a/.vite/build/main-CH17cjbj.js
++++ b/.vite/build/main-CH17cjbj.js
+@@ -84125,7 +84125,42 @@
+         ?.getBrowserSidebarManager()
+         .isBrowserSidebarPresentedForConversation(e, t) ?? !1,
+   );
+-  let _e = ge.getWindowContext();
++  let _e = ge.getWindowContext(),
++    codexWebAppHostServices = {
++      appServerHistorySnapshots: _e.appServerHistorySnapshots,
++      localEnvironments: _e.localEnvironments,
++      pluginScheduledTasks: new o0(
++        _e.appServerConnectionRegistry.getConnection(V),
++      ),
++      threadArchive: new K4(
++        _e.executionHostRegistry,
++        _e.appServerConnectionRegistry,
++        _e.localThreadCatalogSyncCoordinator,
++      ),
++      threadMetadataGeneration: new i3(_e.appServerConnectionRegistry),
++    };
++  c.ipcMain.handle(`codex-web:app-host-service`, async (_event, request) => {
++    if (
++      typeof request !== `object` ||
++      request == null ||
++      Array.isArray(request) ||
++      typeof request.service !== `string` ||
++      typeof request.method !== `string` ||
++      !Array.isArray(request.args)
++    ) {
++      throw Error(`Invalid Codex Web App Host service request`);
++    }
++    let service = codexWebAppHostServices[request.service],
++      method = request.method;
++    if (!service || method === `constructor`) {
++      throw Error(`Unsupported Codex Web App Host service request`);
++    }
++    let handler = service[method];
++    if (typeof handler !== `function`) {
++      throw Error(`Unsupported Codex Web App Host service method`);
++    }
++    return await handler.apply(service, request.args);
++  });
+   d({
+     onDownloadProgressChanged: () => {
+       _e.broadcastAppUpdateState();

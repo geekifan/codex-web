@@ -137,6 +137,18 @@ type ThreadProjectAssignment = {
   pendingCoreUpdate: boolean;
 };
 
+type AppHostServiceName =
+  | "appServerHistorySnapshots"
+  | "localEnvironments"
+  | "pluginScheduledTasks"
+  | "threadArchive"
+  | "threadMetadataGeneration";
+
+type AppHostService = Record<
+  string,
+  (...args: unknown[]) => Promise<unknown>
+>;
+
 type BridgeServerFrame =
   | {
       type: "bridge-ready";
@@ -211,6 +223,11 @@ type ElectronShimState = {
         assignment: ThreadProjectAssignment | null;
       }) => Promise<void>;
     };
+    appServerHistorySnapshots?: AppHostService;
+    localEnvironments?: AppHostService;
+    pluginScheduledTasks?: AppHostService;
+    threadArchive?: AppHostService;
+    threadMetadataGeneration?: AppHostService;
     requestUserInputAutoResolution?: {
       recordConversationActivity?: (args: {
         conversationId: string;
@@ -776,6 +793,22 @@ const themeMediaQuery = matchMedia("(prefers-color-scheme: dark)");
 const mobileMediaQuery = matchMedia("(max-width: 768px)");
 const initialSidebarState = !mobileMediaQuery.matches;
 const electronShim = (window.__ELECTRON_SHIM__ ??= {});
+const APP_HOST_SERVICE_CHANNEL = "codex-web:app-host-service";
+
+function appHostService(service: AppHostServiceName): AppHostService {
+  return new Proxy(
+    {},
+    {
+      get(_target, method): unknown {
+        if (method === "then" || typeof method !== "string") {
+          return undefined;
+        }
+        return (...args: unknown[]) =>
+          invokeMain(APP_HOST_SERVICE_CHANNEL, [{ service, method, args }]);
+      },
+    },
+  ) as AppHostService;
+}
 
 Object.assign(globalThis, {
   process: {
@@ -810,6 +843,11 @@ electronShim.services = {
     ...electronShim.services?.threadProjectAssignments,
     setAssignment: requestThreadProjectAssignment,
   },
+  appServerHistorySnapshots: appHostService("appServerHistorySnapshots"),
+  localEnvironments: appHostService("localEnvironments"),
+  pluginScheduledTasks: appHostService("pluginScheduledTasks"),
+  threadArchive: appHostService("threadArchive"),
+  threadMetadataGeneration: appHostService("threadMetadataGeneration"),
   requestUserInputAutoResolution: {
     ...electronShim.services?.requestUserInputAutoResolution,
     recordConversationActivity: () => undefined,
