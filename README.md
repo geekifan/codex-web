@@ -40,6 +40,13 @@ nix run github:0xcaff/codex-web
 
 then open <http://127.0.0.1:8214> in a browser.
 
+to forward Codex desktop notifications to Bark, set the Bark device key when
+starting the server:
+
+```bash
+CODEX_WEB_BARK_KEY=your-device-key npm run server
+```
+
 ### sign in
 
 ensure the codex cli on the host machine is signed in before starting the

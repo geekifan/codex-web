@@ -1,0 +1,101 @@
+#!/usr/bin/env node
+
+const assert = require("node:assert/strict");
+const test = require("node:test");
+
+const notificationRequests = [];
+process.env.CODEX_WEB_BARK_KEY = "notification-device-key";
+global.fetch = async (url, init) => {
+  notificationRequests.push({ url, init });
+  return Response.json({ code: 200 });
+};
+
+const { createBarkNotifier } = require("../src/server/bark.js");
+const { Notification } = require("../src/server/electron/index.js");
+
+test("Electron notifications are forwarded to Bark", async () => {
+  assert.equal(Notification.isSupported(), true);
+
+  const notification = new Notification({
+    title: "Codex",
+    body: "Task completed",
+  });
+  notification.show();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(notificationRequests.length, 1);
+  assert.deepEqual(JSON.parse(notificationRequests[0].init.body), {
+    body: "Task completed",
+    device_key: "notification-device-key",
+    group: "codex-web",
+    title: "Codex",
+  });
+});
+
+test("Bark is disabled without a key", async () => {
+  let requests = 0;
+  const notifier = createBarkNotifier({
+    key: "",
+    fetchImpl: async () => {
+      requests += 1;
+      return new Response();
+    },
+  });
+
+  assert.equal(notifier.enabled, false);
+  await notifier.send({ title: "Codex", body: "Done" });
+  assert.equal(requests, 0);
+});
+
+test("Bark sends the expected JSON payload", async () => {
+  const requests = [];
+  const notifier = createBarkNotifier({
+    key: "device-key",
+    fetchImpl: async (url, init) => {
+      requests.push({ url, init });
+      return Response.json({ code: 200 });
+    },
+  });
+
+  assert.equal(notifier.enabled, true);
+  await notifier.send({ title: "Codex", body: "Task completed" });
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "https://api.day.app/push");
+  assert.equal(requests[0].init.method, "POST");
+  assert.equal(
+    requests[0].init.headers["content-type"],
+    "application/json; charset=utf-8",
+  );
+  assert.deepEqual(JSON.parse(requests[0].init.body), {
+    body: "Task completed",
+    device_key: "device-key",
+    group: "codex-web",
+    title: "Codex",
+  });
+  assert.ok(requests[0].init.signal instanceof AbortSignal);
+});
+
+test("Bark rejects HTTP and service errors without exposing the key", async () => {
+  const httpNotifier = createBarkNotifier({
+    key: "secret-device-key",
+    fetchImpl: async () => new Response(null, { status: 503 }),
+  });
+  const serviceNotifier = createBarkNotifier({
+    key: "secret-device-key",
+    fetchImpl: async () => Response.json({ code: 400 }),
+  });
+
+  await assert.rejects(
+    httpNotifier.send({ title: "Codex", body: "Done" }),
+    (error) =>
+      error.message.includes("503") &&
+      !error.message.includes("secret-device-key"),
+  );
+  await assert.rejects(
+    serviceNotifier.send({ title: "Codex", body: "Done" }),
+    (error) =>
+      error.message.includes("400") &&
+      !error.message.includes("secret-device-key"),
+  );
+});

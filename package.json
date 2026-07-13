@@ -21,6 +21,7 @@
     "preserver": "npm run build:server && npm run build:browser",
     "server": "CODEX_CLI_PATH=$(which codex) node src/server/main.js",
     "test:bridge": "npm run build:server && node --test ./scripts/test_reliable_bridge",
+    "test:bark": "npm run build:server && node --test ./scripts/test_bark",
     "test:project-writable-roots": "npm run build:server && node --test ./scripts/test_project_writable_roots",
     "test:thread-project-assignments": "npm run build:server && node --test ./scripts/test_thread_project_assignments",
     "test:terminal": "node ./scripts/test_terminal_pty"

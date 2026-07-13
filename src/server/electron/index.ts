@@ -1,3 +1,5 @@
+import { barkNotifier } from "../bark";
+
 type StubFunction = (...args: unknown[]) => unknown;
 type StubListener = (...args: unknown[]) => void;
 type StubWebContents = {
@@ -722,12 +724,51 @@ class Tray {
 }
 
 class Notification {
-  constructor(...args: unknown[]) {
-    log("new Notification", args);
+  private readonly body: string;
+  private readonly emitter = createEmitterStub("Notification");
+  private readonly title: string;
+
+  static isSupported(): boolean {
+    return true;
+  }
+
+  constructor(options: unknown = {}) {
+    log("new Notification", [options]);
+    const notificationOptions =
+      typeof options === "object" && options !== null
+        ? (options as { body?: unknown; title?: unknown })
+        : {};
+    this.body =
+      typeof notificationOptions.body === "string"
+        ? notificationOptions.body
+        : "";
+    this.title =
+      typeof notificationOptions.title === "string"
+        ? notificationOptions.title
+        : "Codex";
+  }
+
+  on(event: string, listener: StubListener): this {
+    this.emitter.on(event, listener);
+    return this;
+  }
+
+  close(): void {
+    log("Notification.close", []);
+    this.emitter.emit("close");
   }
 
   show(): void {
     log("Notification.show", []);
+    void barkNotifier
+      .send({ body: this.body, title: this.title })
+      .catch((error: unknown) => {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "notification delivery failed";
+        console.warn(message);
+      });
   }
 }
 
