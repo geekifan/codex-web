@@ -44,6 +44,11 @@ type RendererToMainMessage =
       requestId: string;
       threadId: string;
       assignment: ThreadProjectAssignment | null;
+    }
+  | {
+      type: "history-snapshots-request";
+      requestId: string;
+      request: HistorySnapshotsRequest;
     };
 
 type MainToRendererMessage =
@@ -98,6 +103,22 @@ type MainToRendererMessage =
       requestId: string;
       ok: false;
       errorMessage: string;
+    }
+  | {
+      type: "history-snapshots-result";
+      requestId: string;
+      ok: true;
+      result: unknown;
+    }
+  | {
+      type: "history-snapshots-result";
+      requestId: string;
+      ok: false;
+      errorMessage: string;
+    }
+  | {
+      type: "history-snapshots-lease-invalidated";
+      subscriptionId: string;
     };
 
 type WritableRoot = {
@@ -137,17 +158,63 @@ type ThreadProjectAssignment = {
   pendingCoreUpdate: boolean;
 };
 
+type HistorySnapshotsRequest =
+  | {
+      operation: "acquireAuthorizationLease";
+      hostId: string;
+    }
+  | {
+      operation: "read" | "delete";
+      hostId: string;
+      authorizationLease: string;
+      threadId: string;
+    }
+  | {
+      operation: "write";
+      hostId: string;
+      authorizationLease: string;
+      snapshotJson: string;
+    }
+  | {
+      operation: "subscribeAuthorizationLeaseInvalidation";
+      hostId: string;
+      subscriptionId: string;
+    }
+  | {
+      operation: "unsubscribeAuthorizationLeaseInvalidation";
+      subscriptionId: string;
+    };
+
+type AppServerHistorySnapshotsService = {
+  acquireAuthorizationLease: (hostId: string) => Promise<unknown>;
+  delete: (
+    hostId: string,
+    authorizationLease: string,
+    threadId: string,
+  ) => Promise<unknown>;
+  read: (
+    hostId: string,
+    authorizationLease: string,
+    threadId: string,
+  ) => Promise<unknown>;
+  subscribeAuthorizationLeaseInvalidation: (
+    hostId: string,
+    callback: () => void,
+  ) => Promise<{ unsubscribe: () => void }>;
+  write: (
+    hostId: string,
+    authorizationLease: string,
+    snapshotJson: string,
+  ) => Promise<unknown>;
+};
+
 type AppHostServiceName =
-  | "appServerHistorySnapshots"
   | "localEnvironments"
   | "pluginScheduledTasks"
   | "threadArchive"
   | "threadMetadataGeneration";
 
-type AppHostService = Record<
-  string,
-  (...args: unknown[]) => Promise<unknown>
->;
+type AppHostService = Record<string, (...args: unknown[]) => Promise<unknown>>;
 
 type BridgeServerFrame =
   | {
@@ -223,7 +290,7 @@ type ElectronShimState = {
         assignment: ThreadProjectAssignment | null;
       }) => Promise<void>;
     };
-    appServerHistorySnapshots?: AppHostService;
+    appServerHistorySnapshots?: AppServerHistorySnapshotsService;
     localEnvironments?: AppHostService;
     pluginScheduledTasks?: AppHostService;
     threadArchive?: AppHostService;
@@ -330,6 +397,14 @@ const pendingThreadProjectAssignments = new Map<
     resolve: () => void;
   }
 >();
+const pendingHistorySnapshots = new Map<
+  string,
+  {
+    reject: (reason?: unknown) => void;
+    resolve: (result: unknown) => void;
+  }
+>();
+const historySnapshotInvalidationCallbacks = new Map<string, () => void>();
 const rendererListeners = new Map<string, Set<IpcListener>>();
 const reportedRendererListenerErrors = new Set<string>();
 
@@ -415,6 +490,32 @@ function handleIncomingMessage(message: MainToRendererMessage): void {
       return;
     }
     pending.reject(new Error(message.errorMessage));
+    return;
+  }
+
+  if (message.type === "history-snapshots-result") {
+    const pending = pendingHistorySnapshots.get(message.requestId);
+    if (!pending) {
+      return;
+    }
+    pendingHistorySnapshots.delete(message.requestId);
+    if (message.ok) {
+      pending.resolve(message.result);
+      return;
+    }
+    pending.reject(new Error(message.errorMessage));
+    return;
+  }
+
+  if (message.type === "history-snapshots-lease-invalidated") {
+    try {
+      historySnapshotInvalidationCallbacks.get(message.subscriptionId)?.();
+    } catch (error) {
+      console.error(
+        "[electron-stub] history snapshot invalidation callback failed",
+        error,
+      );
+    }
   }
 }
 
@@ -789,6 +890,80 @@ function requestThreadProjectAssignment(request: {
   });
 }
 
+function requestHistorySnapshots(
+  request: HistorySnapshotsRequest,
+): Promise<unknown> {
+  const requestId = nextRequestId();
+  return new Promise((resolve, reject) => {
+    pendingHistorySnapshots.set(requestId, { resolve, reject });
+    enqueueMessage({
+      type: "history-snapshots-request",
+      requestId,
+      request,
+    });
+  });
+}
+
+const appServerHistorySnapshots: AppServerHistorySnapshotsService = {
+  acquireAuthorizationLease: (hostId) =>
+    requestHistorySnapshots({ operation: "acquireAuthorizationLease", hostId }),
+  delete: (hostId, authorizationLease, threadId) =>
+    requestHistorySnapshots({
+      operation: "delete",
+      hostId,
+      authorizationLease,
+      threadId,
+    }),
+  read: (hostId, authorizationLease, threadId) =>
+    requestHistorySnapshots({
+      operation: "read",
+      hostId,
+      authorizationLease,
+      threadId,
+    }),
+  async subscribeAuthorizationLeaseInvalidation(hostId, callback) {
+    const subscriptionId = crypto.randomUUID();
+    historySnapshotInvalidationCallbacks.set(subscriptionId, callback);
+    try {
+      await requestHistorySnapshots({
+        operation: "subscribeAuthorizationLeaseInvalidation",
+        hostId,
+        subscriptionId,
+      });
+    } catch (error) {
+      historySnapshotInvalidationCallbacks.delete(subscriptionId);
+      throw error;
+    }
+
+    let unsubscribed = false;
+    return {
+      unsubscribe(): void {
+        if (unsubscribed) {
+          return;
+        }
+        unsubscribed = true;
+        historySnapshotInvalidationCallbacks.delete(subscriptionId);
+        void requestHistorySnapshots({
+          operation: "unsubscribeAuthorizationLeaseInvalidation",
+          subscriptionId,
+        }).catch((error) => {
+          console.error(
+            "[electron-stub] failed to unsubscribe history snapshot invalidation",
+            error,
+          );
+        });
+      },
+    };
+  },
+  write: (hostId, authorizationLease, snapshotJson) =>
+    requestHistorySnapshots({
+      operation: "write",
+      hostId,
+      authorizationLease,
+      snapshotJson,
+    }),
+};
+
 const themeMediaQuery = matchMedia("(prefers-color-scheme: dark)");
 const mobileMediaQuery = matchMedia("(max-width: 768px)");
 const initialSidebarState = !mobileMediaQuery.matches;
@@ -843,7 +1018,7 @@ electronShim.services = {
     ...electronShim.services?.threadProjectAssignments,
     setAssignment: requestThreadProjectAssignment,
   },
-  appServerHistorySnapshots: appHostService("appServerHistorySnapshots"),
+  appServerHistorySnapshots,
   localEnvironments: appHostService("localEnvironments"),
   pluginScheduledTasks: appHostService("pluginScheduledTasks"),
   threadArchive: appHostService("threadArchive"),

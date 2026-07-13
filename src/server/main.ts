@@ -66,6 +66,11 @@ type RendererToMainMessage =
       requestId: string;
       threadId: string;
       assignment: ThreadProjectAssignment | null;
+    }
+  | {
+      type: "history-snapshots-request";
+      requestId: string;
+      request: HistorySnapshotsRequest;
     };
 
 type MainToRendererMessage =
@@ -120,6 +125,49 @@ type MainToRendererMessage =
       requestId: string;
       ok: false;
       errorMessage: string;
+    }
+  | {
+      type: "history-snapshots-result";
+      requestId: string;
+      ok: true;
+      result: unknown;
+    }
+  | {
+      type: "history-snapshots-result";
+      requestId: string;
+      ok: false;
+      errorMessage: string;
+    }
+  | {
+      type: "history-snapshots-lease-invalidated";
+      subscriptionId: string;
+    };
+
+type HistorySnapshotsRequest =
+  | {
+      operation: "acquireAuthorizationLease";
+      hostId: string;
+    }
+  | {
+      operation: "read" | "delete";
+      hostId: string;
+      authorizationLease: string;
+      threadId: string;
+    }
+  | {
+      operation: "write";
+      hostId: string;
+      authorizationLease: string;
+      snapshotJson: string;
+    }
+  | {
+      operation: "subscribeAuthorizationLeaseInvalidation";
+      hostId: string;
+      subscriptionId: string;
+    }
+  | {
+      operation: "unsubscribeAuthorizationLeaseInvalidation";
+      subscriptionId: string;
     };
 
 type WorkspaceDirectoryEntry = {
@@ -239,6 +287,9 @@ function errorMessage(error: unknown): string {
 
 const CODEX_MESSAGE_FROM_VIEW = "codex_desktop:message-from-view";
 const CODEX_MESSAGE_FOR_VIEW = "codex_desktop:message-for-view";
+const HISTORY_SNAPSHOTS_CHANNEL = "codex-web:app-server-history-snapshots";
+const HISTORY_SNAPSHOTS_INVALIDATED_CHANNEL =
+  "codex-web:app-server-history-snapshots:lease-invalidated";
 const PROJECT_WRITABLE_ROOTS_KEY = "project-writable-roots";
 const THREAD_PROJECT_ASSIGNMENTS_KEY = "thread-project-assignments";
 
@@ -640,6 +691,11 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
           serverEpoch,
           onDispose: () => {
             sessions.delete(hello.connectionId);
+            void invokeIpcMainHandlerForServer(
+              HISTORY_SNAPSHOTS_CHANNEL,
+              [{ operation: "disposeOwner", ownerId: hello.connectionId }],
+              () => {},
+            ).catch(() => {});
           },
           onMessage: (message) => {
             handleRendererMessage(session!, message);
@@ -738,6 +794,46 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
         .catch((error) => {
           session.send({
             type: "thread-project-assignment-result",
+            requestId,
+            ok: false,
+            errorMessage: errorMessage(error),
+          });
+        });
+      return;
+    }
+
+    if (message.type === "history-snapshots-request") {
+      const { requestId } = message;
+      invokeIpcMainHandlerForServer(
+        HISTORY_SNAPSHOTS_CHANNEL,
+        [{ ...message.request, ownerId: session.connectionId }],
+        (channel, args) => {
+          const event = args[0];
+          if (
+            channel === HISTORY_SNAPSHOTS_INVALIDATED_CHANNEL &&
+            typeof event === "object" &&
+            event !== null &&
+            "subscriptionId" in event &&
+            typeof event.subscriptionId === "string"
+          ) {
+            session.send({
+              type: "history-snapshots-lease-invalidated",
+              subscriptionId: event.subscriptionId,
+            });
+          }
+        },
+      )
+        .then((result) => {
+          session.send({
+            type: "history-snapshots-result",
+            requestId,
+            ok: true,
+            result,
+          });
+        })
+        .catch((error) => {
+          session.send({
+            type: "history-snapshots-result",
             requestId,
             ok: false,
             errorMessage: errorMessage(error),
