@@ -11,7 +11,20 @@ global.fetch = async (url, init) => {
 };
 
 const { createBarkNotifier } = require("../src/server/bark.js");
-const { Notification } = require("../src/server/electron/index.js");
+const {
+  BrowserWindow,
+  Notification,
+} = require("../src/server/electron/index.js");
+
+test("BrowserWindow.fromId returns live windows only", () => {
+  const window = new BrowserWindow();
+
+  assert.equal(BrowserWindow.fromId(window.id)?.id, window.id);
+  assert.equal(BrowserWindow.fromId(-1), null);
+
+  window.destroy();
+  assert.equal(BrowserWindow.fromId(window.id), null);
+});
 
 test("Electron notifications are forwarded to Bark", async () => {
   assert.equal(Notification.isSupported(), true);

@@ -501,6 +501,11 @@ class BrowserWindow {
     return BrowserWindow.getAllWindows()[0] ?? null;
   }
 
+  static fromId(id: number): BrowserWindow | null {
+    log("BrowserWindow.fromId", [id]);
+    return BrowserWindow.getAllWindows().find((window) => window.id === id) ?? null;
+  }
+
   static fromWebContents(
     webContents: { id?: unknown } | null | undefined,
   ): BrowserWindow | null {
